@@ -990,9 +990,19 @@ async function bareChooserIsRefused(spBase) {
     "?authn= id. What it draws comes off a pending record, and a page " +
     "composed without one would be a partner list with a return address " +
     "anybody could supply. It says: " + body.slice(0, 300));
-  assert.strictEqual(String(response.headers.get("set-cookie") || ""), "",
-    "The bare chooser set a cookie: " + response.headers.get("set-cookie") +
-    ".");
+  // The chooser is a static surface since iya-sts #571 and mints the
+  // `sts_session` ARRIVAL cookie for any browser that has none, refused or
+  // not — an anonymous handle, signed in to nothing. Anything else set here
+  // would be state the refusal left behind.
+  const cookies = typeof response.headers.getSetCookie === "function" ?
+    response.headers.getSetCookie() :
+    [String(response.headers.get("set-cookie") || "")].filter(Boolean);
+  const others = cookies.filter(function (one) {
+    return !/^sts_session=/.test(one);
+  });
+  assert.deepStrictEqual(others, [],
+    "The bare chooser set a cookie other than the arrival cookie: " +
+    others.join(" | ") + ".");
   log.info("The chooser with no pending sign-in is refused 400.");
   log.debug("Leaving bareChooserIsRefused().");
 }

@@ -295,32 +295,6 @@ const JOB_LOCKS = {
   "spiffe_protocol.js": "sts-spiffe",
   "spiffe_page.js": "sts-spiffe",
   "api_spiffe.js": "sts-spiffe",
-  // The mock's SAML 1.1 identity provider settings. `sts_saml11.js` turns
-  // `saml11.signAssertion` and `saml11.signResponse` OFF one at a time to check
-  // that an unsigned document is recognised as one, flips `defaultProfile` to
-  // artifact, and turns `autocreateApplications` off so a relying party nobody
-  // registered is refused. Every one of those is restored, and none of them
-  // instantly — so a browser round trip running inside that window gets an
-  // UNSIGNED assertion, or a profile it did not ask for, or a 400 for a relying
-  // party it just named. `saml11_sso.js` asserts a valid signature and the
-  // confirmation method for its binding, so it would fail naming the signature
-  // or the profile and nothing would say which other job did it.
-  //
-  // The three binding jobs therefore serialise against each other as well,
-  // which is the cost of a single-name lock and is worth it here: the
-  // alternative is a flake that appears only in the pool and passes on its own.
-  // `saml11_options.js` is deliberately absent — it needs no identity provider
-  // at all, so nothing it does can collide with this.
-  "sts_saml11.js": "sts-saml11",
-  // SAML 2.0 ENCRYPTION SHARES THE SAML 2.0 LOCK, and it has to: it turns
-  // `saml2.encryptAssertion` and the two algorithm rows on for service
-  // providers of its own, and it flips `saml2EncryptLogoutNameId` — but it
-  // also drives /saml2/slo, which ENDS WHATEVER SESSION the cookie jar it
-  // shares with a concurrent binding job is holding. A saml_sso.js round trip
-  // running inside that window loses its session mid-flow and fails naming the
-  // sign-in screen, with nothing to say which other job did it.
-  "sts_saml_encryption.js": "saml2",
-  "saml11_sso.js": "sts-saml11",
   // The mock's SPNEGO SIGN-IN, which is `krb5.spnegoAuthentication` — a
   // process-wide setting on a shared service. `kerberos_spnego_signin.js` turns
   // it OFF to assert that a closed door answers 403 naming the setting and
@@ -1498,18 +1472,6 @@ function buildJobs() {
       name: "OAuth2 Authorization Server Metadata (RFC 8414 endpoint + " +
           "debugger Metadata Source)",
       script: "oauth2_metadata_rfc8414.js",
-      env: { WSTRUST_STS_URL: env.WSTRUST_STS_URL },
-    });
-  }
-
-  // The mock authorization server the STS service hosts: every endpoint its
-  // RFC 8414 document advertises answers, with real RS256 tokens that verify
-  // against the advertised JWKS. No browser — it drives the endpoints directly.
-  if (env.WSTRUST_STS_URL) {
-    jobs.push({
-      name: "OAuth2 Authorization Server endpoints (the STS mock's authorize " +
-          "/ token / introspect / revoke / register)",
-      script: "oauth2_sts_endpoints.js",
       env: { WSTRUST_STS_URL: env.WSTRUST_STS_URL },
     });
   }
@@ -3851,22 +3813,6 @@ function buildJobs() {
   // presentation, a KB-JWT signed by the wrong key, an invented Disclosure, one
   // removed after signing, and a claim the verifier asked for withheld.
   if (env.WSTRUST_STS_URL) {
-    // The SERVER half of DPoP, over HTTP with no browser: all twelve RFC 9449
-    // section 4.3 proof checks, the cnf.jkt binding on access and refresh
-    // tokens, the dpop_jkt code binding, jti replay detection, and the nonce
-    // handshake in both of its shapes. It is almost entirely negatives, because
-    // a DPoP server that issues bound tokens and accepts good proofs looks
-    // finished and can be worth nothing — the value is all in what it refuses.
-    // Needs only the STS.
-    jobs.push({
-      name: "DPoP server checks (RFC 9449: the twelve proof checks, binding, " +
-          "replay, nonces)",
-      script: "sts_dpop.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
     // The SIGNED and ENCRYPTED UserInfo response (OIDC Core section 5.3.2),
     // over HTTP with no browser. It is a CROSS-IMPLEMENTATION check and that is
     // why it earns a job of its own: the mock produces every shape with node's
@@ -4258,33 +4204,22 @@ function buildJobs() {
 
   // ---------------------------------------------------------------------
   // SAML **1.1**, which since 2026-08-25 is a working profile on this page
-  // rather than a reference-only entry in a dropdown. THREE kinds of job, and
-  // the distinction between them is worth reading before adding a fourth.
+  // rather than a reference-only entry in a dropdown. TWO kinds of job here,
+  // and the distinction between them is worth reading before adding a third.
   //
   // 1. `saml11_sso.js` — the DEBUGGER's SAML 1.1 service provider, driven
   //    through its pages by a browser, once per binding. `saml_sso.js`'s
   //    sibling and deliberately its mirror image.
   // 2. `saml11_options.js` — which of the SP / Request settings apply to SAML
   //    1.1 and which are switched off. No identity provider at all.
-  // 3. `sts_saml11.js` — the mock STS's SAML 1.1 identity provider, driven
-  //    directly over HTTP with a relying party it writes itself, and almost
-  //    entirely NEGATIVES. It sits with `sts_dpop.js` and `vc_did.js`, which
-  //    is the family it belongs to.
   //
-  // **THERE IS NO KEYCLOAK HALF OF ANY OF THEM, and there will not be one.**
-  // Every other browser-SSO job in this section is pushed once per identity
-  // provider, because a mock that is quietly more permissive than the real
-  // thing passes every test written against it alone. That argument still
-  // holds and there is nothing to act on it with: Keycloak dropped SAML 1.1
-  // years ago. So the mock is the only identity provider here, and
-  // `sts_saml11.js` is what compensates — it writes the relying party ITSELF
-  // rather than importing the debugger's, in the same spirit as `sts_dpop.js`
-  // writing its own DPoP client, so a shared misunderstanding between the two
-  // ends of the exchange cannot pass unnoticed.
-  //
-  // The three binding jobs and `sts_saml11.js` share a JOB_LOCK — see the note
-  // beside it, which is the "read tests/CLAUDE.md before adding a test that
-  // configures a shared service" case exactly.
+  // **THERE IS NO KEYCLOAK HALF OF EITHER, and there will not be one**:
+  // Keycloak dropped SAML 1.1 years ago, so the mock is the only identity
+  // provider here. The mock's own SAML 1.1 identity provider — driven over
+  // HTTP with a relying party written independently, almost entirely
+  // negatives — was `sts_saml11.js` and is iya-sts's own job since the
+  // 2026-10 bump (its `tests/vendored/sts_saml11.js`); it left this suite
+  // with the JOB_LOCK it shared with these three.
   // ---------------------------------------------------------------------
   //
   // The SAML 1.1 metadata URL is the mock's PER-RELYING-PARTY descriptor, the
@@ -4342,66 +4277,6 @@ function buildJobs() {
     script: "saml11_options.js",
     env: {},
   });
-
-  // The mock STS's own SAML 1.1 identity provider, over HTTP with no browser:
-  // Browser/POST and Browser/Artifact end to end, the SOAP responder's four
-  // request types (which makes that service an attribute authority), the
-  // per-relying-party metadata, the NameIdentifier formats, and the four traps
-  // this profile hides — the confirmation method, the signature reference
-  // through the real AssertionID, an InResponseTo on a profile with no request,
-  // and the one-shot artifact.
-  //
-  // Gated on the STS alone, like the tests it sits with. It restores every
-  // setting it changes, through /admin-api/config/reset rather than by writing
-  // the old value back, so it leaves no runtime override behind for the next
-  // run against the same container — the mock's own suite reads that store and
-  // fails on a leftover override.
-  if (env.WSTRUST_STS_URL) {
-    jobs.push({
-      name: "SAML 1.1 identity provider on the mock STS (Browser/POST, " +
-          "Browser/Artifact, the SOAP responder, per-RP metadata)",
-      script: "sts_saml11.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
-  }
-
-  // SAML 2.0 ENCRYPTION on the mock STS, driven over HTTP with a service
-  // provider the test writes itself — its own RSA key pair, its own XML
-  // Encryption decryptor built on node's `crypto`, and a PKCS#1 v1.5 unwrap done
-  // with BigInt because node refuses `RSA_PKCS1_PADDING` for private decryption.
-  //
-  // NOTHING IS BORROWED FROM THE MOCK, which is `sts_dpop.js`'s rule and matters
-  // more here than anywhere else in this suite: if both ends of the encryption
-  // came from one implementation, a shared misunderstanding about where the IV
-  // lives or whether the GCM tag is appended would pass and interoperate with
-  // nobody.
-  //
-  // It is the counterpart of `saml_encrypted_sso.js` and does not replace it.
-  // That job proves the DEBUGGER can consume an encrypted assertion from
-  // Keycloak, in a browser, with the SP key in the page. This one proves the
-  // MOCK can produce one — and, mostly, that it REFUSES what it should: an
-  // altered ciphertext, an EncryptedID encrypted to somebody else's key, and a
-  // decrypted fragment that does not carry its own namespace.
-  //
-  // Gated on the STS alone, like the tests it sits with. It restores every
-  // setting it changes through /admin-api/config/reset rather than by writing
-  // the old value back, so it leaves no runtime override behind for the next
-  // run against the same container — the mock's own suite reads that store and
-  // fails on a leftover override.
-  if (env.WSTRUST_STS_URL) {
-    jobs.push({
-      name: "SAML 2.0 encryption on the mock STS (EncryptedAssertion, " +
-          "EncryptedID both ways, four ciphers x two key transports)",
-      script: "sts_saml_encryption.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
-  }
 
   // SAML 2.0 EncryptedAssertion decryption: SSO against a SAML client with
   // saml.encrypt=true (provisioned in common.sh), so Keycloak returns an

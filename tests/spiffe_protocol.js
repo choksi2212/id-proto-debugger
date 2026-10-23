@@ -198,8 +198,17 @@ function json(url, options) {
 function readSettingRow(key) {
   log.debug("Entering readSettingRow(). " + key);
   return json(STS_URL + "/admin-api/config").then(function (answer) {
-    const rows = (answer.body && (answer.body.settings ||
-      answer.body.config)) || [];
+    // Every row is under `groups[].settings`; a top-level `settings` is a
+    // flat list only on an older mock (on a current one it is the settings
+    // block the console draws, an object).
+    const body = answer.body || {};
+    const rows = Array.isArray(body.settings) ? body.settings.slice() :
+      (Array.isArray(body.config) ? body.config.slice() : []);
+    (body.groups || []).forEach(function (group) {
+      (group.settings || []).forEach(function (one) {
+        rows.push(one);
+      });
+    });
     for (const row of rows) {
       if (row.key === key) {
         log.debug("Leaving readSettingRow(). found, source=" + row.source);

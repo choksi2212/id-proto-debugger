@@ -46,6 +46,7 @@
 const assert = require("assert");
 const { Command, Option } = require("commander");
 const paths = require("./module_paths.js");
+const authnSignin = require("./authn_signin.js");
 
 var appconfig = require(process.env.CONFIG_FILE);
 var bunyan = require("bunyan");
@@ -167,7 +168,7 @@ async function call(method, url, body, options) {
 function settingRow(configDocument, key) {
   log.debug("Entering settingRow(). " + key);
   const doc = configDocument || {};
-  const rows = (doc.settings || []).slice();
+  const rows = (Array.isArray(doc.settings) ? doc.settings : []).slice();
   (doc.groups || []).forEach(function (group) {
     (group.settings || []).forEach(function (one) {
       rows.push(one);
@@ -254,12 +255,14 @@ async function signIn() {
       started.status + ' and sent the browser to "' + to + '", which ' +
       'carries no `authn` — so there is no sign-in form to post.' };
   }
-  const form = 'authn_id=' + encodeURIComponent(match[1]) +
-    '&username=' + encodeURIComponent(WHO) + '&action=login';
-  const posted = await call('POST', stsUrl + '/authn/login', form, {
-    anonymous: true, redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-  const cookie = String(posted.setCookie || '');
+  // The screen is a static surface over /authn-api since iya-sts #571, so
+  // the sign-in is the page's own act, sent the way the page sends it.
+  const posted = await authnSignin.signIn(stsUrl,
+    new URL(to, stsUrl).href,
+    { action: 'login', username: WHO, password: 'x' });
+  posted.text = JSON.stringify(posted.errors || posted.json || '');
+  const cookie = posted.next === 'redirect'
+    ? posted.headers.getSetCookie().join('; ') : '';
   // The cookie is `sts_session` since iya-sts 27b81c5 (it was
   // `sts_mock_session`), and its VALUE is `<session id>.<handle>` rather than
   // the bare id: the handle is a secret the mock stores only a hash of, so a

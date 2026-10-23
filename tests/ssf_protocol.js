@@ -184,7 +184,7 @@ async function call(method, url, body, options) {
 function settingRow(configDocument, key) {
   log.debug("Entering settingRow(). " + key);
   const doc = configDocument || {};
-  const rows = (doc.settings || []).slice();
+  const rows = (Array.isArray(doc.settings) ? doc.settings : []).slice();
   (doc.groups || []).forEach(function (group) {
     (group.settings || []).forEach(function (one) {
       rows.push(one);

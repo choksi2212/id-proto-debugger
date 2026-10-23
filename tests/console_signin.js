@@ -1,121 +1,147 @@
+"use strict";
+//
 // File: console_signin.js
 //
-// ---------------------------------------------------------------------------
-// SIGNING IN TO THE MOCK STS'S /admin CONSOLE, IN ONE PLACE.
+// ===========================================================================
+// SIGNING IN AS THE STATIC ADMIN CONSOLE, OVER HTTP, AND ASKING WHAT ITS
+// PAGES ASK (#446, 2026-10-05).
 //
-// THIS IS A HELPER AND NOT A JOB. It has no assertions about this debugger at
-// all, nothing in run-report.js schedules it, and `browser_flags.js`,
-// `expectation.js` and `paths.js` are here on the same terms.
-//
-// WHY IT EXISTS. Two jobs here read pages off that console — the delegation
-// MAPS, which are the only way to see the pictures those two scenarios draw,
-// because the mock's delegation register is in memory and dies with the
-// container — and until 2026-09-10 each carried its own copy of the walk that
-// reaches them. The walk was three fetches then: a gated GET answered 302 to
-// `/authn/login?authn=…`, a POST of a username, and a cookie came back.
-//
-// On 2026-09-06 the mock made `/admin` a RELYING PARTY of its own
-// authorization server, so the walk is FIVE hops and TWO cookies, and both
-// copies broke in the same way at the same moment — quietly, because a gate
-// that now answers 303 rather than 302 reads to the old probe as a gate that
-// is switched OFF. Each job then went on to fetch a console page with no
-// session, was handed the sign-in screen with a 200 on it, and failed several
-// steps later saying the map was not an SVG document and that no identifier on
-// the tokens page linked to a lineage — two messages that name a drawing and a
-// register, and neither of which names a session.
-//
-// That is the argument for one copy rather than two, and it is the same one
-// `common/xmldsig.js` and `client/src/jws.js` make about a canonicalizer and a
-// signature: the copies agree on the day they are written, and the first time
-// the thing they describe gains a hop the one nobody edited stops being a test
-// of anything.
+// **THIS IS A HELPER AND NOT A JOB.** It has no assertions of its own beyond
+// the ones that say the flow did not happen. BROUGHT BACK FROM iya-sts (2026-10-22, rcbj's decision): written in
+// that repository's tests/vendored/ while this suite still drove the old
+// form-based screens, and copied here under this repository's licence once
+// the sts/ submodule was bumped past them..
 //
 // ---------------------------------------------------------------------------
-// WHAT THE WALK IS, AND WHY EACH HOP IS NAMED.
+// WHAT CHANGED AT THE CUTOVER, AND SO WHAT THIS DOES.
 //
-//   GET  /admin/<anything>   -> 302/303 /oauth2/authorize?client_id=…
-//   GET  /oauth2/authorize   -> 302 /authn/login?authn=…
-//   POST /authn/login        -> 303 back to /oauth2/authorize
-//   GET  /oauth2/authorize   -> 302 /admin/callback?code=…&state=…
-//   GET  /admin/callback     -> 303 wherever the reader was going, plus the
-//                               console's own session cookie
+// The console was a relying party that kept a session cookie, and a job read
+// a page with that cookie and `?format=json`. Since #446 the console is a
+// static page: every `/admin/*` path answers the same document, and the page
+// signs in IN THE BROWSER as the public client `sts-admin-console` — the
+// code flow with PKCE S256, `resource` the realm's `/admin-api`, a token
+// that is always DPoP-bound — and draws each page from its `/admin-api`
+// operation's answer. So a job signs in the same way and asks the same
+// operations:
 //
-// A `redirect: "follow"` fetch would do the whole of that silently and would
-// then tell a caller only that signing in worked, so a broken hop would
-// present as a 401 five steps further on. Each hop is taken by hand for that
-// reason. The mock's own `tests/vendored/console_signin.js` makes the same
-// walk with assertions on every hop; this side reports rather than asserts,
-// because the console is somebody else's surface and a job here that failed on
-// it would be reporting a defect in the mock as a defect in this debugger.
+//   GET  /oauth2/authorize?…code_challenge…     -> 302 /authn/login?authn=…
+//   the sign-in screen, over /authn-api (#571)  -> back to authorize
+//   GET  /oauth2/authorize                      -> 302 /admin/callback?code=…
+//   POST /oauth2/token (DPoP)                   -> a DPoP-bound access token
 //
-// IT KEEPS EVERY COOKIE, BY NAME. There are two by the end — the sign-on
-// session (`sts_session`, the identity provider's) and the console's own
-// (`sts_admin`, established from the ID Token) — and the console reads the
-// SECOND. A jar that kept only the last `Set-Cookie` seen would work by luck
-// and break the day the order changed. Both lost their `mock_` in iya-sts
-// 27b81c5 (2026-09-12), and a walk still looking for the old names reports
-// "set no sign-on session cookie" after a perfectly good 303.
+// The callback itself is not fetched: it is the console's own page, and what
+// it does with the code — the token request — is done here.
 //
-// A GATE THAT IS OFF IS A LEGITIMATE STATE — `admin.authRequired` is
-// switchable — and is reported rather than treated as a pass: no redirect
-// means no session is needed and the reads a caller then makes work exactly as
-// they did before any of this existed. That is why this answers `null` rather
-// than throwing, and why every caller's read path already copes with a null
-// session.
-// ---------------------------------------------------------------------------
-const bunyan = require("bunyan");
-const log = bunyan.createLogger({
-  name: "console_signin",
-  level: (function () {
-    try {
-      return require(process.env.CONFIG_FILE).LOG_LEVEL || "info";
-    } catch (e) {
-      return "info";
+// **THE CLIENT IT ANSWERS** reaches a console path through the operation
+// that MIRRORS it, read off the index `GET /admin-api` answers (every
+// operation names the console control it mirrors — rule 7), the way the
+// console's runtime does (`admin-ui/web_forms.ts`):
+//
+//   * `page(path, query)` — the operation a page is drawn from, asked with
+//     the page's query: what `?format=json` used to answer.
+//   * `draw(path, query)` — that answer drawn by the console's own
+//     renderers (`admin-ui/console.bundle.js`), for a job that reads a page.
+//   * `act(path, fields)` — the POST operation the form at `path` with this
+//     `action` is, sent its fields as JSON.
+//   * `api(method, path, body)` — any `/admin-api` path, as the console.
+//   * `raw(method, path, bytes, contentType)` — bytes as the body, as the
+//     console sends a file to an operation that takes one.
+//   * `refresh()` — the refresh grant with the same DPoP key, as the
+//     console renews; `token` and `refreshToken` are the current pair.
+//   * `get(url)` — a console URL as the jobs wrote one before the cutover,
+//     answered `{ status, body, text }`: `body` what `?format=json` was,
+//     `text` the page drawn.
+//
+// Each request carries a fresh DPoP proof with `ath`, and a `use_dpop_nonce`
+// refusal is retried once with the server's nonce (RFC 9449 section 8).
+//
+// **IT KEEPS EVERY COOKIE, BY NAME**, for the sign-on session the walk sets
+// (`sts_session`); `client.cookie` is that header, for a job that also needs
+// the person's browser session.
+// ===========================================================================
+
+const assert = require("assert");
+// The sign-in screen over `/authn-api` (#571).
+const authnSignin = require("./authn_signin");
+
+// This file's own logger, for the Entering/Leaving lines and the handled
+// exceptions the code style asks for. Its level is LOG_LEVEL, which is also
+// what the harness's assertion logger reads.
+const log = require('bunyan').createLogger({ name: 'console_signin',
+  level: process.env.LOG_LEVEL || 'info' });
+
+// The jar, and the two things a caller does with it.
+function jar() {
+  log.debug("Entering jar().");
+  const held = {};
+  log.debug("Leaving jar().");
+  return {
+    keep: function (response) {
+      log.debug("Entering keep().");
+      const set = response.headers.getSetCookie
+        ? response.headers.getSetCookie() : [];
+      set.forEach(function (one) {
+        const pair = String(one).split(";")[0];
+        const name = pair.split("=")[0];
+        const value = pair.slice(name.length + 1);
+        // An empty value is a cookie being CLEARED — what a sign-out sends —
+        // and it has to remove the entry rather than store an empty one, or
+        // the jar goes on presenting a name with nothing after it.
+        if (value === "") {
+          delete held[name];
+        } else {
+          held[name] = value;
+        }
+      });
+      log.debug("Leaving keep().");
+    },
+    header: function () {
+      log.debug("Entering header().");
+      log.debug("Leaving header().");
+      return Object.keys(held).map(function (k) {
+        return k + "=" + held[k];
+      }).join("; ");
+    },
+    names: function () {
+      log.debug("Entering names().");
+      log.debug("Leaving names().");
+      return Object.keys(held);
+    },
+    get: function (name) {
+      log.debug("Entering get().");
+      log.debug("Leaving get().");
+      return held[name] || "";
     }
-  })()
-});
-
-// How many redirects the tail of the walk may take before it is a loop rather
-// than a flow. Four is the two hops above plus slack; a redirect loop then
-// fails as a loop instead of hanging.
-const MAX_HOPS = 4;
+  };
+}
 
 // ---------------------------------------------------------------------------
-// A CONSOLE ROLE, FOR A CALLER THAT ASKS FOR ONE (iya-sts #103, 2026-09-22).
+// THE PERSON WHO SIGNS IN IS CREATED FIRST, WITH A PASSWORD AND THE ATTRIBUTES
+// A REAL ACCOUNT CARRIES (2026-09-12).
 //
-// Until #103 whoever signed in held both console roles while the roster was
-// empty (`admin.openWhenEmpty`), so a job here signed in as a name of its own
-// and read what it needed. Product mode never opens that window now, and a
-// development roster stops being open to anyone the moment somebody else is
-// granted a role — so a signed-in person with no role is refused 403 on every
-// page, and the two delegation-chain jobs lost their maps without failing.
+// This walk used to type a name nobody had created and a password equal to it,
+// and it worked because development mode checks no password and creates a
+// person — with an INVENTED persona on the entry — for any name that signs in.
+// Product mode does neither: it verifies the password against the person's own
+// entry and invents no `sn`, `mail` or `displayName`. So the account is made
+// through `POST /admin-api/users/create` with `invent: false`, its own
+// attributes and a password of at least twelve characters, and that is the
+// password typed. A name already taken (a second job, or a second run against a
+// kept stack) gets the same password SET rather than a second entry, because
+// one entry per person is the directory's rule and the sign-in below has to
+// present a password that entry holds.
 //
-// So a caller may pass `{ grant: "read" }` (or "write", which is both), and
-// the account is given that role through `POST /admin-api/rbac/grant` before
-// it signs in — BUT ONLY WHERE `GET /admin-api/rbac` says the console is NOT
-// open to anyone. That condition is the whole design, and it points both ways:
-//
-//   * where the window is open (a development stack whose roster is empty, or
-//     whose seeded bootstrap administrator has not signed in yet), a grant is
-//     not needed — and it would CLOSE the window for every other job in the
-//     pool that signs in the old way, because the first grant closes it;
-//   * where it is shut (product always; development once anybody holds a
-//     role), a grant is the only way in.
-//
-// `iya-sts`'s own `sts_xacml_editor.js` makes the same test for the same
-// reason. The pinned sts/ gitlink already publishes `openToAnyone` and the
-// grant operation, so this is not gated on a version.
-//
-// A PASSWORD GOES WITH THE ROLE. Development checks no password, which is why
-// the walk types the username twice; product verifies it against the entry.
-// So an account about to be given a role is created through
-// `POST /admin-api/users/create` with a password of its own (or given one, if
-// it exists), random per process — a console account on a deployment that
-// outlives the run must not hold a password anybody could derive — and that
-// is what the walk types. Every step REPORTS rather than asserts, for the
-// reason the header gives: a refusal here is logged, and the caller's reads
-// then say what the console answered.
+// The management API is reached with whatever credential the run's preload
+// attaches (`tests/tools/attach-admin-token.js`); nothing here mints one.
 // ---------------------------------------------------------------------------
+// THE PASSWORD IS RANDOM PER PROCESS, AND STABLE WITHIN IT (2026-09-18).
+// It was derived from the name — `Console-signin-<user>-Passw0rd!` — which is
+// harmless on a stack torn down after the run and a published credential on
+// a deployment that outlives it: testidp, where a signed-in console account may
+// hold a console role (see `grant` below). Stable within the process because a
+// job signs the same account in twice (admin_api.js asks for it again), and a
+// new random one per process means an account a previous run left behind has
+// a password nobody holds.
 const consolePasswords = {};
 
 function consolePasswordFor(user) {
@@ -123,320 +149,603 @@ function consolePasswordFor(user) {
   const name = String(user);
   if (!consolePasswords[name]) {
     consolePasswords[name] = "Console-signin-" +
-        require("crypto").randomBytes(12).toString("base64url") + "-Aa1!";
+      require("crypto").randomBytes(12).toString("base64url") + "-Aa1!";
   }
   log.debug("Leaving consolePasswordFor().");
   return consolePasswords[name];
 }
 
-// One management API call, answered as `{ status, body }` whatever came back:
-// a refused connection is status 0 and a body that is not JSON is `{ raw }`.
-// The run's access token is attached by tools/attach-admin-token.js.
-async function adminApi(root, method, path, payload) {
-  log.debug("Entering adminApi(). " + method + " " + path);
-  let response;
-  try {
-    response = await fetch(root + "/admin-api" + path, {
-      method: method,
-      headers: Object.assign({ Accept: "application/json" },
-          payload ? { "Content-Type": "application/json" } : {}),
-      body: payload ? JSON.stringify(payload) : undefined
-    });
-  } catch (e) {
-    log.debug("Leaving adminApi(). Unreachable: " + (e && e.message));
-    return { status: 0, body: { raw: String((e && e.message) || e) } };
-  }
-  const raw = await response.text();
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch (e) {
-    log.debug("Caught in adminApi(): " + ((e && e.message) || e));
-    // An HTML error page or an empty body; the raw text is the message.
-    body = { raw: raw.slice(0, 300) };
-  }
-  log.debug("Leaving adminApi(). " + response.status);
-  return { status: response.status, body: body };
-}
-
-// Give `user` the console role `grant` asks for, where the console is shut
-// to anybody without one. Answers the password the walk must type, or null
-// to type the username as it always did (no grant was asked for or needed).
-async function grantConsoleRole(root, user, grant, say, warn) {
-  log.debug("Entering grantConsoleRole(). user=" + user + " grant=" + grant);
-  if (grant !== "read" && grant !== "write") {
-    log.debug("Leaving grantConsoleRole(). No role asked for.");
-    return null;
-  }
-  const roster = await adminApi(root, "GET", "/rbac");
-  if (roster.status !== 200) {
-    warn("[console] GET /admin-api/rbac answered " + roster.status + " " +
-         JSON.stringify(roster.body).slice(0, 200) + ", so whether " + user +
-         " needs a console role cannot be read. Signing in without one; the " +
-         "console reads say what that was worth.");
-    log.debug("Leaving grantConsoleRole(). No roster.");
-    return null;
-  }
-  if (roster.body.openToAnyone) {
-    say("[console] the console is open to anybody who signs in (its roster's " +
-        "bootstrap window), so " + user + " is given no role — a grant " +
-        "would close that window for every other job in the pool.");
-    log.debug("Leaving grantConsoleRole(). Open to anyone.");
-    return null;
-  }
+async function ensureConsoleAccount(base, user, say) {
+  log.debug("Entering ensureConsoleAccount().");
   const password = consolePasswordFor(user);
-  const created = await adminApi(root, "POST", "/users/create", {
-    username: user, invent: false, credential: "password", password: password,
-    attributes: { cn: "Console " + user, givenName: "Console",
-                  sn: String(user), displayName: "Console " + user,
-                  mail: String(user) + "@console-signin.test" }
+  const domain = "console-signin.test";
+  async function apiPost(path, payload) {
+    log.debug("Entering apiPost().");
+    const r = await fetch(base + "/admin-api" + path, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const raw = await r.text();
+    let body = {};
+    try {
+      body = JSON.parse(raw);
+    } catch (e) {
+      log.debug("Caught in apiPost(): " + ((e && e.message) || e));
+      // Not JSON — an HTML error page. Kept as the raw text for the message.
+      body = { raw: raw };
+    }
+    log.debug("Leaving apiPost().");
+    return { status: r.status, body: body };
+  }
+  const created = await apiPost("/users/create", {
+    username: user, invent: false,
+    attributes: { cn: "Console " + user, givenName: "Console", sn: String(user),
+                  displayName: "Console " + user,
+                  mail: String(user) + "@" + domain },
+    credential: "password", password: password
   });
-  if (!(created.status === 200 && created.body && created.body.ok)) {
-    const set = await adminApi(root, "POST", "/users/set-password",
-                               { user: user, password: password });
+  if (created.status === 200 && created.body && created.body.ok) {
+    say("[console] created " + user + " with a password and its attributes " +
+        "before signing in.");
+    log.debug("Leaving ensureConsoleAccount().");
+    return password;
+  }
+  if (created.body && created.body.existing) {
+    const set = await apiPost("/users/set-password",
+                              { user: user, password: password });
     if (!(set.status === 200 && set.body && set.body.ok)) {
-      warn("[console] " + user + " could be neither created (" +
-           created.status + " " + JSON.stringify(created.body).slice(0, 200) +
-           ") nor given a password (" + set.status + " " +
-           JSON.stringify(set.body).slice(0, 200) + "). A product-mode " +
-           "sign-in verifies the password, so it will be refused.");
+      // NOT A FAILURE HERE, though the sign-in below will be one: the
+      // password is new to this process, so a refusal is a policy this helper
+      // does not satisfy, and the sign-in names it. The same process asking
+      // twice is the one ordinary refusal — the history holds the same value.
+      say("[console] " + user + " already exists and setting its password " +
+          "again answered " + set.status + " " +
+          JSON.stringify(set.body).slice(0, 200) + ".");
     }
+    log.debug("Leaving ensureConsoleAccount().");
+    return password;
   }
-  const roles = grant === "write" ? ["read", "write"] : ["read"];
-  for (const role of roles) {
-    const granted = await adminApi(root, "POST", "/rbac/grant",
-                                   { username: user, role: role });
-    if (granted.status !== 200) {
-      warn("[console] granting " + user + " the console's " + role + " role " +
-           "answered " + granted.status + " " +
-           JSON.stringify(granted.body).slice(0, 200) + ". The console reads " +
-           "will be refused 403.");
-    }
-  }
-  say("[console] the console is open only to a role holder (openToAnyone is " +
-      "false), so " + user + " was given " + roles.join(" and ") + " and a " +
-      "password of its own before signing in.");
-  log.debug("Leaving grantConsoleRole(). Granted.");
-  return password;
+  assert.fail("creating the console account " + user + " through POST " +
+    "/admin-api/users/create answered " + created.status + " " +
+    JSON.stringify(created.body).slice(0, 300));
+  log.debug("Leaving ensureConsoleAccount().");
 }
 
-// ---------------------------------------------------------------------------
-// THE COOKIE JAR. Two cookies, kept by name, presented together.
-// ---------------------------------------------------------------------------
-function makeJar() {
-  log.debug("Entering makeJar().");
-  const held = {};
-  const jar = {
-    keep: function (response) {
-      log.debug("Entering keep().");
-      const set = response.headers.getSetCookie
-          ? response.headers.getSetCookie() : [];
-      set.forEach(function (one) {
-        const pair = String(one).split(";")[0];
-        const name = pair.split("=")[0];
-        const value = pair.slice(name.length + 1);
-        // An empty value is a cookie being CLEARED — what a sign-out sends —
-        // so it removes the entry rather than storing a name with nothing
-        // after it, which the console would then be presented with.
-        if (value === "") {
-          delete held[name];
-        } else {
-          held[name] = value;
-        }
-      });
-      log.debug("Leaving keep(). " + Object.keys(held).length + " held.");
+// --- DPoP and PKCE, with node's crypto -------------------------------------
+
+function b64u(buffer) {
+  log.debug("Entering b64u().");
+  log.debug("Leaving b64u().");
+  return Buffer.from(buffer).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// A P-256 key per sign-in, as the console makes one per page load, and the
+// RFC 9449 proof it signs: `typ` dpop+jwt, the public key in the header,
+// `htu` without query or fragment, `ath` beside an access token, `nonce`
+// once a server has given one. node signs ECDSA as r || s with
+// `dsaEncoding: "ieee-p1363"`, which is JOSE's ES256 form.
+function dpopKey() {
+  log.debug("Entering dpopKey().");
+  const crypto = require("crypto");
+  const pair = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const jwk = pair.publicKey.export({ format: "jwk" });
+  const state = { nonce: "" };
+  log.debug("Leaving dpopKey().");
+  return {
+    publicJwk: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y },
+    keepNonce: function (response) {
+      const nonce = response.headers.get("dpop-nonce");
+      if (nonce) {
+        state.nonce = nonce;
+      }
     },
-    header: function () {
-      log.debug("Entering header().");
-      const line = Object.keys(held).map(function (name) {
-        return name + "=" + held[name];
-      }).join("; ");
-      log.debug("Leaving header().");
-      return line;
-    },
-    names: function () {
-      log.debug("Entering names().");
-      const names = Object.keys(held);
-      log.debug("Leaving names().");
-      return names;
-    },
-    get: function (name) {
-      log.debug("Entering get(). " + name);
-      const value = held[name] || "";
-      log.debug("Leaving get().");
-      return value;
+    proof: function (method, url, accessToken) {
+      const header = { typ: "dpop+jwt", alg: "ES256", jwk: this.publicJwk };
+      const claims = { jti: b64u(crypto.randomBytes(16)),
+                       htm: String(method).toUpperCase(),
+                       htu: String(url).replace(/[?#].*$/, ""),
+                       iat: Math.floor(Date.now() / 1000) };
+      if (accessToken) {
+        claims.ath = b64u(crypto.createHash("sha256").update(accessToken)
+          .digest());
+      }
+      if (state.nonce) {
+        claims.nonce = state.nonce;
+      }
+      const input = b64u(JSON.stringify(header)) + "." +
+                    b64u(JSON.stringify(claims));
+      const signature = crypto.sign("sha256", Buffer.from(input),
+        { key: pair.privateKey, dsaEncoding: "ieee-p1363" });
+      return input + "." + b64u(signature);
     }
   };
-  log.debug("Leaving makeJar().");
-  return jar;
 }
 
-// ---------------------------------------------------------------------------
-// THE WALK.
+// --- which operation a console path is --------------------------------------
+
+// The console paths a `mirrors` declaration names after one method.
+function mirroredPaths(mirrors, method) {
+  log.debug("Entering mirroredPaths().");
+  const out = [];
+  const re = new RegExp(method + " (\\/admin[^\\s,;)]*)", "g");
+  let m = re.exec(String(mirrors || ""));
+  while (m) {
+    out.push(m[1].replace(/[.:]+$/, ""));
+    m = re.exec(String(mirrors || ""));
+  }
+  log.debug("Leaving mirroredPaths().");
+  return out;
+}
+
+// Of several operations that mirror one control, the one in the page's own
+// area wins — `/admin/users`'s list is `/admin-api/users`, not the many that
+// name it — which is `web_forms.ts`'s rule.
+function preferOwn(rows, path) {
+  log.debug("Entering preferOwn().");
+  const own = "/admin-api" + path.slice("/admin".length);
+  const mine = rows.filter(function (row) {
+    return row.path === own || row.path.indexOf(own + "/") === 0;
+  });
+  log.debug("Leaving preferOwn().");
+  return (mine.length ? mine : rows)[0] || null;
+}
+
+// THE CONSOLE'S RENDERERS, as a browser loads them: `admin-ui/
+// console.bundle.js`, the image build's esbuild output of `web_pages.ts`,
+// run in a context with no require, process or Buffer — what a browser has —
+// as `tests/console_web_bundle.js` runs it. Its page table says which
+// operation a page is drawn from and with what query, and `render()` draws
+// it. Loaded once, the first time a job asks.
+let bundle = null;
+function consoleBundle() {
+  log.debug("Entering consoleBundle().");
+  if (!bundle) {
+    const fs = require("fs");
+    const path = require("path");
+    const vm = require("vm");
+    const file = path.join(__dirname, "..", "..", "admin-ui",
+                           "console.bundle.js");
+    const code = fs.readFileSync(file, "utf8");
+    bundle = vm.runInContext(code + "\n;StsConsole;", vm.createContext({}),
+                             { filename: "console.bundle.js" });
+  }
+  log.debug("Leaving consoleBundle().");
+  return bundle;
+}
+
+// `base` is the service's base URL (with a realm's prefix for a realm);
+// `user` is the name to sign in as. `log` is optional and says what was done.
 //
-// `base` is the mock's base URL with no trailing slash; `user` is the name to
-// type, which is also the password (a development service checks none) unless
-// a role was granted below, which gives the account a password of its own.
-// `callerLog` is the JOB's logger, so the two lines a reader cares about
-// appear in the job's own output rather than in this module's — and it is a
-// parameter rather than the module's `log` on purpose: a parameter named `log`
-// would SHADOW the module logger, which is the `edge_landing_contract.js` trap
-// CLAUDE.md records.
+// `options.grant` — "read" or "write" — GIVES the account that console role
+// first (2026-09-18). A development stack with an empty roster admits anybody;
+// a deployment with an administrator admits only a holder, and a job that
+// reads console pages answers 403 for want of a role rather than for anything
+// it tests. Opt-in, because sts_realm_administrators.js grants and confines
+// roles itself. "write" grants both. The role goes to an account whose
+// password only this process holds.
 //
-// Answers the Cookie header to send on console reads, or null when the gate is
-// off or when the walk did not complete.
-//
-// `options.grant` — "read" or "write" — gives the account that console role
-// first, where the console is shut to anybody without one. See
-// grantConsoleRole() above for when it is, and why it is not granted when the
-// console is open.
-// ---------------------------------------------------------------------------
-async function signInToTheConsole(base, user, callerLog, options) {
-  log.debug("Entering signInToTheConsole(). user=" + user);
+// Answers the client described at the top of this file.
+async function signInToTheConsole(base, user, log2, options) {
+  log.debug("Entering signInToTheConsole().");
+  const say = (log2 && log2.info) ? log2.info.bind(log2) : function () {};
   const opts = options || {};
-  const say = (callerLog && callerLog.info) ? callerLog.info.bind(callerLog)
-      : log.info.bind(log);
-  const warn = (callerLog && callerLog.warn) ? callerLog.warn.bind(callerLog)
-      : log.warn.bind(log);
-  const cookies = makeJar();
-  const root = String(base || "").replace(/\/+$/, "");
+  const cookies = jar();
+  const crypto = require("crypto");
+  const key = dpopKey();
 
-  function absolute(where) {
-    log.debug("Entering absolute().");
-    const url = /^https?:\/\//i.test(String(where || ""))
-        ? String(where) : root + String(where || "");
-    log.debug("Leaving absolute().");
-    return url;
+  function fromLocation(location) {
+    return new URL(String(location || ""), base).toString();
   }
 
-  async function hop(where, options) {
-    log.debug("Entering hop(). " + where);
-    const settings = Object.assign({ redirect: "manual" }, options || {});
-    settings.headers = Object.assign({ cookie: cookies.header() },
-        settings.headers || {});
-    const response = await fetch(absolute(where), settings);
-    cookies.keep(response);
-    log.debug("Leaving hop(). " + response.status);
-    return response;
+  async function fetchKeeping(url, init) {
+    const sent = Object.assign({ redirect: "manual" }, init || {});
+    sent.headers = Object.assign({ cookie: cookies.header() },
+                                 sent.headers || {});
+    const r = await fetch(url, sent);
+    cookies.keep(r);
+    return r;
   }
 
-  // Hop one. A 302 OR A 303: the console answered 302 until 2026-09-06 and
-  // answers 303 now, and reading only one of them as "gated" is precisely the
-  // failure this module was written for.
-  const gated = await hop("/admin/tokens");
-  if (gated.status !== 302 && gated.status !== 303) {
-    say("[console] admin.authRequired is off (GET /admin/tokens answered " +
-        gated.status + " with no redirect), so the console reads need no " +
-        "session.");
-    log.debug("Leaving signInToTheConsole(). The gate is off.");
-    return null;
+  const password = await ensureConsoleAccount(base, user, say);
+  if (opts.grant === "read" || opts.grant === "write") {
+    const roles = opts.grant === "write" ? ["read", "write"] : ["read"];
+    for (const role of roles) {
+      const r = await fetch(base + "/admin-api/rbac/grant", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user, role: role })
+      });
+      assert.ok(r.status === 200, "granting Admin " + role + " to " + user +
+        " through POST /admin-api/rbac/grant answered " + r.status + " " +
+        (await r.text()).slice(0, 200));
+    }
+    say("[console] " + user + " holds Admin " + roles.join(" and ") + ".");
   }
 
-  const toAuthorize = gated.headers.get("location") || "";
-  if (!/\/oauth2\/authorize\?/.test(toAuthorize)) {
-    warn("[console] a gated console GET should start an AUTHORIZATION " +
-         "REQUEST and went to \"" + toAuthorize + "\". The console signs in " +
-         "as the seeded client sts-admin-console; if that entry has been " +
-         "deleted the gate answers 503 with the reason rather than " +
-         "redirecting. The console reads are skipped.");
-    log.debug("Leaving signInToTheConsole(). Not an authorization request.");
-    return null;
-  }
+  // THE SHELL FIRST, as a browser opens the console: serving it registers
+  // this realm's `/admin/callback` on the seeded console client
+  // (`oidcRp.ensureConsoleCallback()`), which the authorization request
+  // below must name.
+  // `?realm=default` past the realm chooser a bare `/admin` draws on the
+  // default realm once realms exist; under a realm's prefix it is ignored.
+  const shell = await fetchKeeping(base + "/admin?realm=default");
+  assert.ok(shell.status === 200,
+    "GET " + base + "/admin should answer the console's shell; it answered " +
+    shell.status);
 
-  // Hop two: the authorization endpoint, which has no sign-on session yet and
-  // sends the browser to the screen carrying the id of the request waiting
-  // there. Without that id the screen has nothing to sign in FOR.
-  const toScreen = await hop(toAuthorize);
+  // THE AUTHORIZATION REQUEST, as the console's page sends it.
+  const verifier = b64u(crypto.randomBytes(32));
+  const state = b64u(crypto.randomBytes(16));
+  const redirectUri = base + "/admin/callback";
+  const resource = base + "/admin-api";
+  const authorize = base + "/oauth2/authorize?" + new URLSearchParams({
+    response_type: "code", client_id: "sts-admin-console",
+    redirect_uri: redirectUri,
+    scope: "openid admin:read admin:write admin:console",
+    state: state, code_challenge: b64u(crypto.createHash("sha256")
+      .update(verifier).digest()),
+    code_challenge_method: "S256", resource: resource,
+    // OpenID Connect's nonce, derived from the verifier as the runtime
+    // derives it (`SpaClient.nonceFor()`); FAPI 1.0 requires one.
+    nonce: crypto.createHash("sha256").update("nonce:" + verifier)
+      .digest("base64url") }).toString();
+  const toScreen = await fetchKeeping(authorize);
   const where = toScreen.headers.get("location") || "";
   const authn = (where.match(/[?&]authn=([^&]+)/) || [])[1];
-  if (!authn) {
-    warn("[console] the authorization endpoint sent this session to \"" +
-         where + "\", which carries no authn id, so there is nothing to sign " +
-         "in FOR. The console reads are skipped.");
-    log.debug("Leaving signInToTheConsole(). No authn id.");
-    return null;
+  assert.ok(authn,
+    "the console's authorization request should send a browser with no " +
+    "sign-on session to the sign-in screen carrying the id of the request " +
+    "waiting there; it answered " + toScreen.status + " to \"" + where +
+    "\". The console signs in as the seeded public client " +
+    "sts-admin-console, with PKCE.");
+
+  // THE SIGN-IN SCREEN, OVER `/authn-api` (#571), through the one helper:
+  // the shell, the view and the act, with this walk's cookies — and an
+  // administrator's OFFERED second factor (#246) ignored there, as rcbj
+  // asked ("update tests to just click ignore for the time being").
+  const signedIn = await authnSignin.signIn(base, fromLocation(where),
+    { action: "login", username: user, password: password },
+    { cookie: cookies.header() });
+  cookies.keep(signedIn);
+  if (signedIn.ignored) {
+    say("[console] " + user + " was offered a second factor and ignored it.");
   }
+  assert.ok(signedIn.next === "redirect" && cookies.get("sts_session"),
+    "signing in at /authn/login should set the sign-on session cookie and " +
+    "answer where to go; it answered " + signedIn.status + " " +
+    signedIn.next + " " + JSON.stringify(signedIn.errors));
 
-  // Hop three: the screen itself, for its CSRF token. It is read rather than
-  // assumed because the mock added one with the same commit that made the
-  // console a relying party, and a POST without it is refused as a forgery —
-  // a 403 that says nothing about a session.
-  const screen = await hop(where);
-  const html = await screen.text();
-  const csrf = (html.match(/name="csrf_token" value="([^"]+)"/) || [])[1] || "";
+  // Back through the authorization endpoint — which now has a session —
+  // until it answers the callback with a code. Bounded, so a loop fails as
+  // a loop; the callback is the console's page and is not fetched.
+  let at = null;
+  let location = signedIn.location;
+  for (let i = 0; i < 5 && !/\/admin\/callback\?/.test(location) &&
+       (!at || at.status === 302 || at.status === 303); i++) {
+    at = await fetchKeeping(fromLocation(location));
+    location = at.headers.get("location") || "";
+  }
+  const back = new URL(fromLocation(location));
+  const code = back.searchParams.get("code");
+  assert.ok(/\/admin\/callback$/.test(back.pathname) && code &&
+            back.searchParams.get("state") === state,
+    "the authorization endpoint should answer the console's callback with " +
+    "a code and the state it was sent; it answered " +
+    (at ? at.status : signedIn.status) + " to \"" +
+    location + "\"");
 
-  // The role, where one is asked for and the console needs one — and with it
-  // the password the account now holds. Without one the username is typed as
-  // the password, which a development service does not check.
-  const password = await grantConsoleRole(root, user, opts.grant, say, warn);
-
-  let signedIn = await hop("/authn/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: "authn_id=" + encodeURIComponent(authn) +
-        "&username=" + encodeURIComponent(user) +
-        "&password=" + encodeURIComponent(password || user) +
-        "&action=login" +
-        (csrf ? "&csrf_token=" + encodeURIComponent(csrf) : "")
-  });
-  // AN ADMINISTRATOR IS OFFERED A SECOND FACTOR (iya-sts #246): an account
-  // holding a console role and no second factor is shown a set-up step with
-  // an Ignore button rather than being signed in, under the authentication
-  // policy's default `offer`. Ignore finishes the sign-in on the password,
-  // which is all a job reading the console wants. An sts without the step
-  // answers the POST with the redirect below and never reaches this.
-  if (signedIn.status === 200) {
-    const offered = await signedIn.text();
-    const setupId = /id="mfa-setup-ignore"/.test(offered)
-        ? (offered.match(/name="mfa_id" value="([^"]+)"/) || [])[1] || ""
-        : "";
-    if (setupId) {
-      signedIn = await hop("/authn/mfa-setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "mfa_id=" + encodeURIComponent(setupId) + "&action=ignore"
-      });
-      say("[console] " + user + " was offered a second factor to set up and " +
-          "ignored it.");
+  // THE TOKEN REQUEST, DPoP-bound, retried once with a nonce.
+  const tokenUrl = base + "/oauth2/token";
+  let tokenAnswer = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded",
+                 dpop: key.proof("POST", tokenUrl, "") },
+      body: new URLSearchParams({
+        grant_type: "authorization_code", code: code,
+        redirect_uri: redirectUri, client_id: "sts-admin-console",
+        code_verifier: verifier, resource: resource }).toString()
+    });
+    key.keepNonce(r);
+    tokenAnswer = { status: r.status, json: await r.json().catch(function () {
+      return {};
+    }) };
+    if (!(r.status === 400 && tokenAnswer.json.error === "use_dpop_nonce")) {
+      break;
     }
   }
-  if (!cookies.get("sts_session")) {
-    warn("[console] signing in at /authn/login answered " + signedIn.status +
-         " and set no sign-on session cookie. This service checks no " +
-         "password, so a refusal there is about the request rather than the " +
-         "credential. The console reads are skipped.");
-    log.debug("Leaving signInToTheConsole(). No sign-on cookie.");
-    return null;
+  assert.ok(tokenAnswer.status === 200 && tokenAnswer.json.access_token &&
+            /^dpop$/i.test(String(tokenAnswer.json.token_type || "")),
+    "the console's code should redeem for a DPoP-bound access token; the " +
+    "token endpoint answered " + tokenAnswer.status + " " +
+    JSON.stringify(tokenAnswer.json).slice(0, 300));
+  let token = tokenAnswer.json.access_token;
+  let refreshToken = tokenAnswer.json.refresh_token || "";
+
+  // THE REFRESH GRANT WITH THE SAME KEY, as the console renews: the refresh
+  // token rotated, the new access token taking the old one's place.
+  async function refresh() {
+    log.debug("Entering refresh().");
+    let answer = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(tokenUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded",
+                   dpop: key.proof("POST", tokenUrl, "") },
+        body: new URLSearchParams({
+          grant_type: "refresh_token", refresh_token: refreshToken,
+          client_id: "sts-admin-console", resource: resource }).toString()
+      });
+      key.keepNonce(r);
+      answer = { status: r.status,
+                 json: await r.json().catch(function () {
+                   return {};
+                 }) };
+      if (!(r.status === 400 && answer.json.error === "use_dpop_nonce")) {
+        break;
+      }
+    }
+    if (answer.status === 200 && answer.json.access_token) {
+      token = answer.json.access_token;
+      refreshToken = answer.json.refresh_token || refreshToken;
+    }
+    log.debug("Leaving refresh().");
+    return answer;
   }
 
-  // Hops four and five: back through the authorization endpoint, which now
-  // has a session, and then the callback, which redeems the code and
-  // establishes the console's own cookie.
-  let at = await hop(signedIn.headers.get("location") || "");
-  let i;
-  for (i = 0; i < MAX_HOPS && (at.status === 302 || at.status === 303); i++) {
-    at = await hop(at.headers.get("location") || "");
+  // ONE REQUEST TO THE API AS THE CONSOLE, retried once with a nonce.
+  async function api(method, path, body) {
+    log.debug("Entering api().");
+    const url = /^https?:/.test(path) ? path : base + path;
+    let answer = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const headers = { authorization: "DPoP " + token,
+                        dpop: key.proof(method, url, token),
+                        accept: "application/json" };
+      const init = { method: method, headers: headers };
+      if (body !== undefined) {
+        headers["content-type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const r = await fetch(url, init);
+      key.keepNonce(r);
+      const text = await r.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        log.debug("Caught in api(): " + ((e && e.message) || e));
+        // Not JSON: a document, a file; answered as its text.
+        json = null;
+      }
+      answer = { status: r.status, json: json, text: text,
+                 headers: r.headers };
+      const challenge = String(r.headers.get("www-authenticate") || "");
+      // AN EXPIRED TOKEN IS RENEWED AND THE REQUEST SENT AGAIN, as the
+      // console does: a long job outlives the access token's lifetime.
+      if (r.status === 401 && /invalid_token/.test(challenge) &&
+          refreshToken && attempt === 0) {
+        const renewed = await refresh();
+        if (renewed.status === 200) {
+          continue;
+        }
+      }
+      if (!(r.status === 401 && /use_dpop_nonce/.test(challenge))) {
+        break;
+      }
+    }
+    log.debug("Leaving api().");
+    return answer;
   }
 
-  if (!cookies.get("sts_admin")) {
-    warn("[console] the authorization code flow finished holding [" +
-         cookies.names().join(", ") + "] and not the CONSOLE's own session " +
-         "cookie. That cookie is what the console reads: since 2026-09-06 " +
-         "the sign-on session alone does not open it, which is the point of " +
-         "the console being a relying party rather than a reader of the " +
-         "identity provider's store. The console reads are skipped.");
-    log.debug("Leaving signInToTheConsole(). No console cookie.");
-    return null;
+  // BYTES AS THE BODY, as the console sends a file to an operation that
+  // takes one (the risk dataset upload): the same proof, a content type of
+  // the caller's.
+  async function raw(method, path, bytes, contentType) {
+    log.debug("Entering raw().");
+    const url = /^https?:/.test(path) ? path : base + path;
+    let answer = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(url, { method: method, body: bytes,
+        headers: { authorization: "DPoP " + token,
+                   dpop: key.proof(method, url, token),
+                   accept: "application/json",
+                   "content-type": contentType } });
+      key.keepNonce(r);
+      const text = await r.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        log.debug("Caught in raw(): " + ((e && e.message) || e));
+        // Not JSON: answered as its text.
+        json = null;
+      }
+      answer = { status: r.status, json: json, text: text,
+                 headers: r.headers };
+      const challenge = String(r.headers.get("www-authenticate") || "");
+      if (!(r.status === 401 && /use_dpop_nonce/.test(challenge))) {
+        break;
+      }
+    }
+    log.debug("Leaving raw().");
+    return answer;
   }
 
-  say("[console] signed in as " + user + " through the authorization code " +
-      "flow; holding " + cookies.names().length + " cookie(s).");
-  log.debug("Leaving signInToTheConsole(). Holding a session.");
-  return cookies.header();
+  let index = null;
+  async function operations() {
+    log.debug("Entering operations().");
+    if (!index) {
+      const answer = await api("GET", "/admin-api");
+      assert.ok(answer.status === 200 && answer.json &&
+                Array.isArray(answer.json.operations),
+        "GET /admin-api should answer the index of operations; it answered " +
+        answer.status);
+      index = answer.json.operations;
+    }
+    log.debug("Leaving operations().");
+    return index;
+  }
+
+  say("[console] signed in as " + user + " as the static console: PKCE, a " +
+      "DPoP-bound token for " + resource + ".");
+  log.debug("Leaving signInToTheConsole().");
+  return {
+    user: user,
+    get token() {
+      return token;
+    },
+    get refreshToken() {
+      return refreshToken;
+    },
+    cookie: cookies.header(),
+    api: api,
+    raw: raw,
+    refresh: refresh,
+    // The operation a console page is drawn from, asked with its query as
+    // the console asks it (the page table's names and fixed members); a
+    // path the table does not hold is found by what mirrors it.
+    page: async function (path, query) {
+      const asked = Object.assign({}, query || {});
+      delete asked.format;
+      const table = consoleBundle();
+      const known = table.pageFor(path);
+      let operation = known ? known.operation : "";
+      let q = known ? table.operationQuery(path, asked) : asked;
+      if (!operation) {
+        const rows = (await operations()).filter(function (row) {
+          return row.method === "GET" &&
+                 mirroredPaths(row.mirrors, "GET").indexOf(path) >= 0;
+        });
+        const row = preferOwn(rows, path);
+        assert.ok(row, "no /admin-api operation mirrors GET " + path);
+        operation = row.path;
+        q = asked;
+      }
+      const qs = new URLSearchParams(q).toString();
+      const answer = await api("GET", operation + (qs ? "?" + qs : ""));
+      // A COMBINED PAGE IS SEVERAL ANSWERS (2026-10-11): the SAML, Kerberos,
+      // XACML, VC, OAuth and SSF pages draw their tabs from the `compose`
+      // members their page row names, fetched beside the main operation and
+      // merged in under each member's name — what the runtime's draw does.
+      // Without them the renderer throws "missing a tab view".
+      // Each member is asked as the runtime asks it (`composeRequests()`,
+      // 2026-10-12): under the names its own operation reads, which on
+      // Protocols → Cert issuance are not the page's.
+      if (known && known.compose && answer.status === 200 && answer.json) {
+        const members = table.composeRequests(known, asked);
+        const answers = await Promise.all(members.map(function (one) {
+          const search = new URLSearchParams(one.params).toString();
+          return api("GET", one.operation + (search ? "?" + search : ""));
+        }));
+        const json = Object.assign({}, answer.json);
+        answers.forEach(function (one, index) {
+          assert.ok(one.status === 200 && one.json,
+                    members[index].operation + " answered " +
+                    one.status + " composing " + path);
+          json[members[index].member] = one.json;
+        });
+        return Object.assign({}, answer, { json: json });
+      }
+      return answer;
+    },
+    // THE READER'S LANGUAGE FOR A BUNDLE A JOB LOADED ITSELF (#539): the
+    // shell's `locale` member, asked once, built into that bundle's
+    // translator and made its default, as the runtime's applyLocale() does.
+    // A job that draws with its own bundle calls this once before drawing.
+    localize: async function (table) {
+      if (this.localeData === undefined) {
+        const shell = await api("GET", "/admin-api/console");
+        this.localeData = shell.json && shell.json.locale
+          ? shell.json.locale : null;
+      }
+      if (!this.localeData || !table || !table.messages) {
+        return null;
+      }
+      const translator =
+        table.messages.WebTranslator.fromData(this.localeData);
+      table.messages.WebTranslator.setDefault(function () {
+        return translator;
+      });
+      return translator;
+    },
+    // The page drawn, as the console draws it for this token's reader:
+    // `{ status, json, html }`, `html` empty when the operation refused.
+    draw: async function (path, query) {
+      const answer = await this.page(path, query);
+      const table = consoleBundle();
+      // DRAWN FOR WHAT THIS TOKEN MAY DO, as the console draws for its
+      // reader: `GET /admin-api/me`'s `write`, asked once.
+      if (this.mayWrite === undefined) {
+        const me = await api("GET", "/admin-api/me");
+        this.mayWrite = !!(me.json && me.json.write);
+      }
+      // AND IN THE READER'S LANGUAGE, as the console's runtime draws it
+      // (#539): a translator built by the bundle from the shell's `locale`
+      // member, asked once. Without it every message renders as its key.
+      if (this.translator === undefined) {
+        const shell = await api("GET", "/admin-api/console");
+        this.translator = table.messages && shell.json && shell.json.locale
+          ? table.messages.WebTranslator.fromData(shell.json.locale) : null;
+      }
+      // AND IT IS THE DEFAULT, as the runtime's applyLocale() makes it: a
+      // helper the renderers call with no translator (the pager, a pane)
+      // falls back to it, and without this drew keys here and English in a
+      // browser. Set on every draw, because two clients share one bundle.
+      if (this.translator && table.messages) {
+        const translator = this.translator;
+        table.messages.WebTranslator.setDefault(function () {
+          return translator;
+        });
+      }
+      const asked = Object.assign({}, query || {});
+      delete asked.format;
+      const html = answer.status === 200 && answer.json
+        ? table.render(path, answer.json,
+                       table.kit.context(asked, this.mayWrite,
+                                         this.translator || undefined)) ||
+          "" : "";
+      return { status: answer.status, json: answer.json, html: html };
+    },
+    // A CONSOLE URL AS THE JOBS WROTE ONE — `/admin/scheduler?per=200`,
+    // `?format=json` or not, with or without `base` — answered as a page
+    // read was: `body` the operation's answer (what `?format=json` was),
+    // `text` the page drawn from it.
+    get: async function (url) {
+      const u = new URL(String(url), base + "/");
+      const prefix = new URL(base + "/").pathname.replace(/\/$/, "");
+      const path = u.pathname.indexOf(prefix + "/admin") === 0
+        ? u.pathname.slice(prefix.length) : u.pathname;
+      const query = {};
+      u.searchParams.forEach(function (value, name) {
+        query[name] = value;
+      });
+      const drawn = await this.draw(path, query);
+      return { status: drawn.status, body: drawn.json || {}, json: drawn.json,
+               text: drawn.html };
+    },
+    // The POST operation the form at `path` with this `action` is.
+    act: async function (path, fields) {
+      const body = Object.assign({}, fields || {});
+      const action = String(body.action || "");
+      delete body.action;
+      const rows = (await operations()).filter(function (row) {
+        return row.method === "POST" &&
+               mirroredPaths(row.mirrors, "POST").indexOf(path) >= 0;
+      });
+      const named = action ? rows.filter(function (row) {
+        return row.path.split("/").pop() === action;
+      }) : rows;
+      const row = named.length > 1 ? preferOwn(named, path)
+        : (named[0] || null);
+      assert.ok(row, "no /admin-api operation is the console form POST " +
+        path + (action ? " action=" + action : ""));
+      return api("POST", row.path, body);
+    }
+  };
 }
 
-module.exports = {
-  signInToTheConsole: signInToTheConsole,
-  makeJar: makeJar,
-  consolePasswordFor: consolePasswordFor
-};
+module.exports = { signInToTheConsole: signInToTheConsole, jar: jar,
+                   ensureConsoleAccount: ensureConsoleAccount,
+                   consolePasswordFor: consolePasswordFor };

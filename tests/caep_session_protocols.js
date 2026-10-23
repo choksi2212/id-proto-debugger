@@ -91,6 +91,7 @@ const { Command, Option } = require("commander");
 const paths = require("./module_paths.js");
 const { mustBeReady, declineToRun } = require("./expectation.js");
 const registry = require("./sts_applications.js");
+const authnSignin = require("./authn_signin.js");
 const { usernameFor } = require("./random_username.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
@@ -233,14 +234,22 @@ function startUrlFor(who) {
       encodeURIComponent('https://rp11.example.com/acs') + '&providerId=' +
       encodeURIComponent(clientId());
   } else if (protocol === 'wsfed') {
+    // A `wreply` is named and registered (provisionFor()): since iya-sts
+    // #592 a request with none is refused 400 where the entry has no
+    // registered reply address.
     url = stsUrl + '/wsfed?wa=wsignin1.0&wtrealm=' +
-      encodeURIComponent(clientId());
+      encodeURIComponent(clientId()) + '&wreply=' +
+      encodeURIComponent(WSFED_REPLY);
   } else if (protocol === 'spnego') {
     url = stsUrl + '/authn/spnego';
   }
   log.debug("Leaving startUrlFor(). " + url);
   return url;
 }
+
+// Where a WS-Federation sign-in response would be posted. Nothing listens
+// there; the job stops at the session.
+const WSFED_REPLY = 'https://rp.example.com/wsfed';
 
 function clientId() {
   log.debug("Entering clientId().");
@@ -357,23 +366,24 @@ async function signIn(who) {
       'the endpoint is not enabled or the request was refused before ' +
       'authentication.' };
   }
-  const id = new URL(location, stsUrl).searchParams.get('authn');
-  const form = 'authn_id=' + encodeURIComponent(id) + '&username=' +
-      encodeURIComponent(who) + '&password=x';
-  const posted = await call('POST', stsUrl + '/authn/login', form,
-      { 'Content-Type': 'application/x-www-form-urlencoded' });
-  const cookie = cookieOf(posted);
+  // The screen is a static surface over /authn-api since iya-sts #571, so
+  // the sign-in is the page's own act, sent the way the page sends it.
+  const posted = await authnSignin.signIn(stsUrl,
+      new URL(location, stsUrl).href,
+      { action: 'login', username: who, password: 'x' });
+  const cookie = posted.next === 'redirect' ? cookieOf(posted) : '';
   if (!cookie) {
     log.debug("Leaving signIn(). No cookie.");
-    return { ok: false, why: 'the sign-in screen accepted the form (' +
-      posted.status + ') and set no session cookie' };
+    return { ok: false, why: 'the sign-in screen answered ' + posted.status +
+      ' (' + posted.next + ') and set no session cookie: ' +
+      JSON.stringify(posted.errors || []) };
   }
   // THE RETURN TRIP, which is the sign-in's own presentation and must NOT be
   // reported as single sign-on — `notePresented()` spends a one-shot flag on
   // it. If this stopped being free, every flow in this suite would emit a
   // session-presented milliseconds after its session-established and the event
   // that means SINGLE SIGN-ON HAPPENED would mean nothing.
-  const back = new URL(posted.headers.get('location') || start, stsUrl).href;
+  const back = new URL(posted.location || start, stsUrl).href;
   await call('GET', back, null, { Cookie: cookie });
   log.debug("Leaving signIn(). Signed in.");
   return { ok: true, cookie: cookie, start: start };
@@ -627,6 +637,7 @@ async function run() {
   // nothing else.
   await registry.provision(registry.stsBaseFor(stsUrl), {
     identifier: clientId(),
+    fields: protocol === 'wsfed' ? { wsfedReplyUrl: [WSFED_REPLY] } : {},
     why: 'the ' + protocol + ' sign-in this CAEP job drives'
   });
 

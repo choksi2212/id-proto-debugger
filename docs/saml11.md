@@ -336,7 +336,6 @@ armed on a version where it is disabled.
 |---|---|---|
 | `tests/saml11_sso.js` | the DEBUGGER's pages, once per binding — the full round trip | the mock STS, a browser; artifact also needs the api |
 | `tests/saml11_options.js` | which settings apply and which are off, the request shape per binding, the 1.1 SP metadata | a browser and nothing else |
-| `tests/sts_saml11.js` | the mock STS's identity provider, over HTTP, with a relying party it writes itself | the mock STS, no browser |
 | `tests/saml_operation_history.js` | the shared log — its reference-only refusal case is SAML **1.0** now | a browser |
 | `tests/saml_response_decoder_page.js` | the SAML Response Decoder, whose 1.1 case asserts the VERDICT off a `samlp:Success` rather than that a table rendered | a browser and nothing else — it builds its own fixtures |
 
@@ -346,29 +345,14 @@ mock that is quietly more permissive than the real thing passes every test writt
 against it alone. That argument still holds and there is nothing to act on it
 with: Keycloak dropped SAML 1.1 years ago.
 
-`sts_saml11.js` is what compensates. It writes the relying party **itself** rather
-than importing the debugger's — the same reasoning `sts_dpop.js` gives for writing
-its own DPoP client — so a shared misunderstanding between the two ends of the
-exchange cannot pass unnoticed. It is also almost entirely negatives, several of
-which a browser cannot easily reach: an artifact resolved twice, an `InResponseTo`
-on a profile with no request, a signature reference through the real
-`AssertionID`.
-
-**It was called `saml11_sso.js` until 2026-08-25**, and the rename is the whole of
-the difference: that name now belongs to the Selenium job, because it is
-`saml_sso.js`'s sibling and runs the same round trip through the same pages.
-
-### They share a JOB_LOCK, and that is not optional
-
-`sts_saml11.js` turns `saml11.signAssertion` and `saml11.signResponse` **off** one
-at a time, flips `saml11.defaultProfile` to artifact, and turns
-`saml11.autocreateApplications` off. Each is restored, and none of them instantly
-— so a browser round trip running inside that window gets an unsigned assertion, a
-profile it did not ask for, or a 400 for a relying party it just named.
-`saml11_sso.js` asserts a valid signature and the confirmation method for its
-binding, so it would fail naming the signature or the profile and **nothing would
-say which other job did it**. `JOB_LOCKS` in `tests/run-report.js` puts all four
-binding jobs and `sts_saml11.js` on `sts-saml11`.
+What compensated was `sts_saml11.js`, which drove the mock's identity
+provider over HTTP with a relying party written independently, almost entirely
+negatives — an artifact resolved twice, an `InResponseTo` on a profile with no
+request, a signature reference through the real `AssertionID`. **It was retired
+from this suite on 2026-10-22**: iya-sts runs its own version of it
+(`sts/tests/vendored/sts_saml11.js`), and with it went the `sts-saml11`
+JOB_LOCK it shared with the three binding jobs, which only existed because that
+job turned the mock's SAML 1.1 signing settings off and on.
 
 `saml11_options.js` is deliberately outside that lock: it needs no identity
 provider at all.

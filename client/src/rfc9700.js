@@ -289,7 +289,7 @@ var REQUIREMENTS = [
   { id: "4.6", section: 4, level: "MUST", enforced: "detected",
     title: "replay of the proof is prevented",
     note: "As 4.5. The mock STS's own RFC 9700 mode covers both, and " +
-          "tests/sts_dpop.js is where they are actually exercised." },
+          "its own test suite is where they are actually exercised." },
 
   // -- 5. Resource Owner Password Credentials -------------------------------
   { id: "5.1", section: 5, level: "MUST NOT", enforced: "enforced",

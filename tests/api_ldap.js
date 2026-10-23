@@ -118,6 +118,7 @@ const crypto = require("crypto");
 const { Command, Option } = require("commander");
 const { usernameFor, runStamp } = require("./random_username.js");
 const registry = require("./sts_applications.js");
+const authnSignin = require("./authn_signin.js");
 const { mustBeReady } = require("./expectation.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
@@ -1078,6 +1079,10 @@ async function wsTrustSeedsAnEntryToo(described) {
 // protocol authenticates anybody is `startSession()`, and now there is one
 // screen in front of it rather than two.
 // ---------------------------------------------------------------------------
+// Where the WS-Federation section's sign-in response would be posted. Nothing
+// listens there; the section stops at the sign-in screen.
+const WSFED_REPLY = "https://rp.example.com/wsfed";
+
 async function wsFederationSeedsAnEntryToo(described) {
   log.debug("Entering wsFederationSeedsAnEntryToo().");
   log.info("=== WS-Federation: an entry for whoever signs in ===");
@@ -1093,11 +1098,16 @@ async function wsFederationSeedsAnEntryToo(described) {
     identifier: wtrealm,
     name: "api_ldap WS-Federation relying party",
     protocols: ["wsfed", "saml11"],
-    fields: { wsfedRealm: [wtrealm], samlEntityId: [wtrealm] },
+    fields: { wsfedRealm: [wtrealm], samlEntityId: [wtrealm],
+              wsfedReplyUrl: [WSFED_REPLY] },
     why: "the wtrealm this section signs in to"
   });
+  // A `wreply` is named and registered: since iya-sts #592 a request with
+  // none goes to the entry's registered reply address and is refused 400
+  // where there is none — the mock relying party it fell back to is gone.
   const signInUrl = stsUrl + "/wsfed?wa=wsignin1.0&wtrealm=" +
-    encodeURIComponent(wtrealm);
+    encodeURIComponent(wtrealm) + "&wreply=" +
+    encodeURIComponent(WSFED_REPLY);
   // `fetch` follows the redirect to /authn/login by itself, which is what a
   // browser would do and is the whole of what this hop is.
   const screen = await fetch(signInUrl);
@@ -1114,53 +1124,24 @@ async function wsFederationSeedsAnEntryToo(described) {
     "authentication service and it ended at " + screen.url + ". A mock that " +
     "answers this itself is one where `appFederationRelationship` and " +
     "`fedAuthnMechanism` do nothing for this profile — see the note above.");
-  const html = await screen.text();
+  await screen.text();
 
-  // The form's own hidden field. It is read out of the page rather than
-  // invented because it is what holds the interrupted request: the sign-in
-  // POST is accepted on the strength of this id and not of a cookie, which is
-  // also why this section needs no cookie jar.
-  const idMatch = html.match(/name="authn_id"[^>]*value="([^"]+)"/);
-  assert.ok(idMatch,
-    "the sign-in screen must carry an authn_id, which is the handle the " +
-    "login POST is accepted on. Without one this test would be posting a form the " +
-    "service has no pending request for, and the 400 that came back would " +
-    "read as a broken sign-in rather than as a changed page. Got: " +
-    html.slice(0, 300));
-
+  // The screen is a static surface over /authn-api since iya-sts #571: the
+  // pending id is the screen's own address, and the sign-in is the page's
+  // act, sent the way the page sends it. Its answer names the next step, and
+  // `redirect` — back to the passive endpoint, the interrupted request
+  // resumed — is the success shape; `refused` is what a refused sign-in
+  // looks like, and would leave the assertion below failing for a reason
+  // that has nothing to do with the directory.
   const who = "wsfed" + stamp;
-  const login = await fetch(stsUrl + "/authn/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: "authn_id=" + encodeURIComponent(idMatch[1]) +
-      "&username=" + encodeURIComponent(who) +
-      "&password=whatever&action=login",
-    redirect: "manual"
-  });
-  // A REDIRECT back to the passive endpoint is the success shape: the screen is
-  // done and the request it interrupted is resumed. A 200 means the screen was
-  // sent again, which is what a refused sign-in looks like — and it would leave
-  // the assertion below failing for a reason that has nothing to do with the
-  // directory.
-  //
-  // WHICH redirect is asserted the way RFC 9700 section 4.12 states it rather
-  // than as one exact code: 303 is what the mock sends now and what the BCP
-  // asks for, 302 is what it sent before and what most servers send, and
-  // **307 is the one that is forbidden** — it replays the method and the body,
-  // which on this request is the username and password, onto whatever the
-  // redirect names. Pinning 302 exactly made this fail the day the mock started
-  // doing the more correct thing, and it never checked the code the
-  // specification actually cares about. tests/oauth2_sts_endpoints.js and
-  // tests/sts_dpop.js say the same thing about the OIDC screen, which is a
-  // separate one for the reason WS-Federation section 13.2.1 gives.
-  assert.ok(login.status === 303 || login.status === 302,
-    "a WS-Federation sign-in should redirect back to the passive endpoint; " +
-    "got " + login.status + ", which is the screen being shown again — the " +
-    "sign-in was refused, so nothing authenticated and the check below would " +
-    "be measuring that instead.");
-  assert.notStrictEqual(login.status, 307,
-    "RFC 9700 section 4.12: a credential-bearing POST must not be answered " +
-    "with 307, which replays the method and the body onto the next hop.");
+  const login = await authnSignin.signIn(stsUrl, String(screen.url),
+    { action: "login", username: who, password: "whatever" });
+  assert.strictEqual(login.next, "redirect",
+    "a WS-Federation sign-in should send the browser back to the passive " +
+    "endpoint; the screen answered " + login.status + " (" + login.next +
+    "): " + JSON.stringify(login.errors || []) + " — the sign-in was " +
+    "refused, so nothing authenticated and the check below would be " +
+    "measuring that instead.");
 
   assert.strictEqual(await entriesFor(who), 1,
     "signing in for a WS-Federation request must seed uid=" + who + "," +
