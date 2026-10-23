@@ -165,11 +165,11 @@ async function presentThroughThePages(driver, held) {
   await driver.wait(until.urlContains("vc-presentation-3.html"), stepWait,
     "presenting should reach step 3.");
 
-  const verdict = await waitForStatus(driver, "vp_verifier_status",
-    function (s) { return /ACCEPTED|REFUSED/.test(s); },
-              "the verifier should reach a verdict", stepWait);
-  assert.ok(/ACCEPTED/.test(verdict),
-    "the verifier should accept a correctly built VP JWT. Said: " + verdict);
+  const verdict = await common.verdictOfWhatWasSent(driver, { By: By,
+    until: until, wait: stepWait, verifierBase: verifierBase });
+  assert.ok(verdict.ok,
+    "the verifier should accept a correctly built VP JWT. Its verdict: " +
+        JSON.stringify(verdict));
 
   const recheck = await waitForStatus(driver, "vp_recheck_status",
       function (s) { return s.trim() !== ""; },

@@ -615,11 +615,22 @@ async function assertChooser(driver, spBase) {
       "supposed to be a page of its own and not the sign-in screen with its " +
       "form suppressed — this application's people do not type a name here.");
   }
-  const forms = await driver.findElements(By.css("form"));
-  assert.strictEqual(forms.length, 0,
-    "The federation chooser carries " + forms.length + " form(s). The " +
-    "buttons must be links: a form control would post to the sign-in " +
-    "handler, which signs somebody in on a typed name.");
+  // A FORM THAT SIGNS SOMEBODY IN, not any form: iya-sts's sign-in surface
+  // also draws forms of its own on every page — the account switcher, on by
+  // default since 2026-10-20 (`authn.multipleAccounts`), and the language
+  // chooser — and neither takes a name. What must not be here is a form
+  // posting to the sign-in handler, or one carrying a password.
+  const signInForms = await driver.executeScript(
+    "return Array.prototype.slice.call(document.querySelectorAll('form'))" +
+    ".filter(function (f) { var a = f.getAttribute('action') || ''; " +
+    "return /\\/authn\\/login/.test(a) || " +
+    "f.querySelector('input[type=password]'); })" +
+    ".map(function (f) { return f.getAttribute('action') || '(none)'; });");
+  assert.strictEqual(signInForms.length, 0,
+    "The federation chooser carries " + signInForms.length + " sign-in " +
+    "form(s) (" + JSON.stringify(signInForms) + "). The buttons must be " +
+    "links: a form control would post to the sign-in handler, which signs " +
+    "somebody in on a typed name.");
 
   // ONE BUTTON PER CONFIGURED PARTNER, AND ONLY THOSE. More would mean the
   // generic list at the foot of the sign-in screen had leaked in, which offers

@@ -324,6 +324,13 @@ async function signOut(cookie) {
   const url = signOutUrlFor();
   const asked = await call('GET', url, null, { Cookie: cookie });
   const found = /name="confirm_for" value="([^"]*)"/.exec(asked.text || '');
+  // What the door said, by its page title: "Sign out?" asks, "Signed out"
+  // with no question means it found no session for this cookie to end —
+  // which is the state that sends no session-revoked at all.
+  const title = (/<title>([^<]*)</.exec(asked.text || '') || [])[1] || '';
+  log.info("[sign-out] " + url + " answered " + asked.status +
+           (title ? ' "' + title + '"' : '') +
+           (found ? ", asking to confirm." : "."));
   if (!found || url.indexOf('/oauth2/logout') < 0) {
     log.debug("Leaving signOut(). No confirmation asked: " + asked.status);
     return asked;
@@ -332,6 +339,7 @@ async function signOut(cookie) {
       'confirm=yes&confirm_for=' + encodeURIComponent(found[1]),
       { Cookie: cookie,
         'Content-Type': 'application/x-www-form-urlencoded' });
+  log.info("[sign-out] the confirmation was answered " + out.status + ".");
   log.debug("Leaving signOut(). Confirmed: " + out.status);
   return out;
 }
@@ -701,7 +709,17 @@ async function run() {
   // already been answered", a 400) before the session is looked at — so the
   // re-presentation emitted nothing and read as a missing session-presented.
   // The other four build the same URL either way.
-  await call('GET', startUrlFor(who), null, { Cookie: session.cookie });
+  const presented = await call('GET', startUrlFor(who), null,
+                               { Cookie: session.cookie });
+  // A presentation may ROTATE the session's handle and send the new cookie;
+  // the old one then names no live session, and the sign-out below would
+  // end nothing and send no session-revoked. So the cookie is taken up the
+  // way a browser takes it up.
+  const rotated = cookieOf(presented);
+  if (rotated && rotated !== session.cookie) {
+    log.info("[session] the presentation rotated the session cookie.");
+    session.cookie = rotated;
+  }
 
   // Which session the register filed it under, so the five by-hand events can
   // name it. Read off the mock rather than guessed: the identifier is random.
@@ -739,8 +757,33 @@ async function run() {
   await signOut(session.cookie);
 
   // --- what arrived, by both deliveries ---------------------------------
-  const polled = await pollSets(pollStream, who);
-  const pushed = await pushedSets();
+  // An emitted event reaches the stream ASYNCHRONOUSLY: the sign-out is
+  // answered before the session-revoked about it is queued, and a push is a
+  // further hop. So wait — up to fifteen seconds — until the revocation of
+  // THIS session has arrived by poll (and by push, where there is push),
+  // rather than reading whatever had arrived the instant the answer came.
+  // Nothing here acknowledges, so each read is everything so far.
+  let polled = [];
+  let pushed = [];
+  const revokedHere = function (tokens) {
+    return tokens.some(function (token) {
+      const read = typeOf(token);
+      return read.short === 'session-revoked' &&
+             namesSession(read, row.sessionId);
+    });
+  };
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    polled = await pollSets(pollStream, who);
+    pushed = await pushedSets();
+    if ((revokedHere(polled) && (!pushAvailable || revokedHere(pushed))) ||
+        Date.now() >= deadline) {
+      break;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 500);
+    });
+  }
   const seen = { poll: {}, push: {} };
   const model = caep.newSession({ iss: stsUrl, sub: row.sub,
     sid: row.sessionId });

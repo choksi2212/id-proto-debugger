@@ -723,6 +723,14 @@ async function provisionDelegatedPermissions() {
       why: pair.why
     });
   }
+  // WHO MAY ACT FOR WHOM, which is not the permission register above: iya-sts
+  // asks its delegation policy (#186) about every RFC 8693 exchange. The two
+  // exchanging tiers each hand the subject on to the next — the gateway to
+  // the bus, the bus to the provider — and webapp1 exchanges nothing.
+  await registry.allowHop(stsBase(), { actor: GATEWAY, target: ESB,
+    why: "the gateway exchanges the sign-in's token for the bus" });
+  await registry.allowHop(stsBase(), { actor: ESB, target: PROVIDER,
+    why: "the bus exchanges that for the provider" });
   // WEBAPP1 EXPOSES NOTHING, asserted rather than assumed — `delegate()`
   // checks containment, and an application that acquired an API would pass
   // every check above while being the one arrangement this cast is built to

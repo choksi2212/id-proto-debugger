@@ -449,6 +449,25 @@ async function verdictFor(state) {
   return r.body;
 }
 
+// THE VERDICT ON WHAT THE PAGES JUST SENT. Step 3 shows what the Verifier
+// ANSWERED — all OID4VP gives a wallet — and the Verifier's check-by-check
+// verdict is its own record, read here where an operator reads it: the
+// management API, by the transaction's `state`, which the wallet kept with
+// the presentation it sent.
+async function verdictOfWhatWasSent(driver) {
+  log.debug("Entering verdictOfWhatWasSent().");
+  var state = await driver.executeScript(
+    "var p = JSON.parse(localStorage.getItem('sdjwtvp_presentation') || " +
+    "'{}'); return p.state || '';");
+  assert.ok(state, "step 3 holds no state for what was sent, so the " +
+            "Verifier's verdict on it cannot be looked up.");
+  var doc = await verdictFor(state);
+  assert.ok(doc.verdict, "the Verifier has recorded no verdict for state " +
+            state + ": " + JSON.stringify(doc).slice(0, 300));
+  log.debug("Leaving verdictOfWhatWasSent().");
+  return doc.verdict;
+}
+
 // ---------------------------------------------------------------------------
 // The verifier's own checks, exercised directly.
 //
@@ -852,18 +871,19 @@ async function presentThroughThePages(driver, held, byReference) {
 
   // ---- step 3: both accounts of it ---------------------------------------
   await waitForStatus(driver, "vp_verifier_status",
-    function (s) { return /ACCEPTED|REFUSED|could not be fetched/.test(s); },
-    "step 3 never reported the verifier's verdict");
-  var verdictText = await text(driver, "vp_verifier_status");
-  assert.ok(/ACCEPTED/.test(verdictText),
-    "the verifier should have accepted this presentation. Got: " + verdictText);
-  var checks = await driver.executeScript(
-    "return Array.prototype.slice.call(document.querySelectorAll('#vp_verifier_table tbody tr'))" +
-    "  .map(function (tr) {" +
-    "    var td = tr.querySelectorAll('td');" +
-    "    return { name: td[0].textContent.trim(), result: " +
-        "td[1].textContent.trim() };" +
-    "  });");
+    function (s) { return /accepted the response|refused the response/.test(
+      s); },
+    "step 3 never reported what the Verifier answered");
+  var answerText = await text(driver, "vp_verifier_status");
+  assert.ok(/accepted the response/.test(answerText),
+    "the Verifier's Response Endpoint should have accepted the response. " +
+        "Got: " + answerText);
+  var verdict = await verdictOfWhatWasSent(driver);
+  assert.ok(verdict.ok, "the Verifier should have accepted this " +
+            "presentation. Its verdict: " + JSON.stringify(verdict));
+  var checks = (verdict.checks || []).map(function (c) {
+    return { name: c.name, result: c.ok ? "OK" : "FAILED" };
+  });
   assert.ok(checks.length >= 10,
     "the verifier should report every check it made, got " + checks.length +
         ".");
@@ -888,15 +908,14 @@ async function presentThroughThePages(driver, held, byReference) {
   assert.ok(/all pass/.test(own.status),
     "the wallet's own checks on what it sent should pass too. Got: " +
         own.status);
-  var disclosedText = await text(driver, "vp_verifier_disclosed");
-  var extraText = await text(driver, "vp_verifier_extra");
-  assert.deepStrictEqual(disclosedText.split(", ").sort(),
+  assert.deepStrictEqual((verdict.disclosed || []).slice().sort(),
                          REQUESTED.slice().sort(),
     "the verifier should have received exactly the claims it asked for. Got: " +
-        disclosedText);
-  assert.ok(/^none/.test(extraText),
-    "and nothing more — no over-disclosure. Got: " + extraText);
-  var verifierClaims = JSON.parse(await text(driver, "vp_verifier_claims"));
+        JSON.stringify(verdict.disclosed));
+  assert.strictEqual((verdict.extraDisclosed || []).length, 0,
+    "and nothing more — no over-disclosure. Got: " +
+        JSON.stringify(verdict.extraDisclosed));
+  var verifierClaims = verdict.claims || {};
   REQUESTED.forEach(function (name) {
     assert.ok(name in verifierClaims, "the verifier should know " + name + ".");
   });
@@ -967,21 +986,17 @@ async function withholdARequestedClaim(driver, held) {
     "a refused presentation should still open step 3 — that is where the " +
         "reason is.");
   await driver.sleep(600);
-  var verdict = await waitForStatus(driver, "vp_verifier_status",
-    function (s) { return /ACCEPTED|REFUSED/.test(s); },
-              "step 3 never reported the verdict");
-  assert.ok(/REFUSED/.test(verdict), "the verifier must refuse it. Got: " +
-            verdict);
-  assert.ok(/Requested claims/.test(verdict),
-    "and the failing check should be the one about the claims it asked " +
-        "for. Got: " + verdict);
-  var failed = await driver.executeScript(
-    "return Array.prototype.slice.call(document.querySelectorAll('#vp_verifier_table tbody tr'))" +
-    "  .filter(function (tr) { return " +
-        "tr.querySelectorAll('td')[1].textContent.trim() !== 'OK'; })" +
-    "  .map(function (tr) { var td = tr.querySelectorAll('td');" +
-    "                       return { name: td[0].textContent.trim(), detail: " +
-        "td[2].textContent.trim() }; });");
+  var answered = await waitForStatus(driver, "vp_verifier_status",
+    function (s) { return /accepted the response|refused the response/.test(
+      s); },
+    "step 3 never reported what the Verifier answered");
+  log.info("[negative] the Verifier answered: " + answered);
+  var refusedVerdict = await verdictOfWhatWasSent(driver);
+  assert.ok(!refusedVerdict.ok, "and its verdict must say so: " +
+            JSON.stringify(refusedVerdict));
+  var failed = (refusedVerdict.checks || [])
+    .filter(function (c) { return !c.ok; })
+    .map(function (c) { return { name: c.name, detail: c.detail }; });
   assert.strictEqual(failed.length, 1,
     "exactly one check should fail — everything else about the presentation " +
         "was fine: " +

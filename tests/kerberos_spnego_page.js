@@ -583,15 +583,20 @@ async function theHandshakeSucceedsAndIsExplained(driver) {
 async function theDoorIssuesAndAcceptsATicketForItsOwnSpn(driver) {
   log.debug("Entering theDoorIssuesAndAcceptsATicketForItsOwnSpn().");
   log.info("=== iya-sts's sign-in door, with a ticket for its own SPN ===");
-  await loadUrl(driver, baseUrl + "/spnego.html");
-  await driver.wait(until.elementLocated(By.id("krb_spnego_url")), 20000);
-  await setField(driver, "krb_spnego_url", doorUrl);
-  await driver.findElement(By.id("krb_spnego_url")).sendKeys("\t");
-  doorSpn = await driver.wait(async function () {
-    const v = await driver.findElement(By.id("krb_spnego_spn"))
-        .getAttribute("value");
-    return /^HTTP\//.test(v) ? v : false;
-  }, 10000, "the page never derived an SPN from the door's URL");
+  // THE SPN IS THE ONE THE DOOR ADVERTISES, read off iya-sts's principal
+  // table, and not the one the page derives from the URL: the door's acceptor
+  // is `krb5.servicePrincipal`, whatever host it is reached at. (Waiting for
+  // the page to derive one was also satisfied at once by the companion's SPN
+  // the field still held from the section before, so the exchange then spent
+  // the companion's ticket at the door and was refused KRB_AP_ERR_NOT_US.)
+  const table = await (await kerberosPrincipals.principalsDocument(stsUrl))
+      .json();
+  doorSpn = String((table.serviceAccount && table.serviceAccount.spn) ||
+                   (table.serviceAccountSettings || {}).principal || "")
+      .split("@")[0];
+  assert.ok(/^HTTP\//.test(doorSpn),
+    "iya-sts publishes no acceptor SPN for its sign-in door: " +
+    JSON.stringify(table.serviceAccount || table.serviceAccountSettings));
 
   await loadUrl(driver, baseUrl + "/kerberos_tgs.html?return=spnego&spn=" +
       encodeURIComponent(doorSpn));

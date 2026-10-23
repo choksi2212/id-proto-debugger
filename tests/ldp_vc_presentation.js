@@ -369,18 +369,18 @@ async function test() {
         "b.click();");
     await driver.wait(until.urlContains("vc-presentation-3.html"), stepWait,
       "presenting should reach step 3.");
-    const verdict = await waitForStatus(driver, "vp_verifier_status",
-      function (s) { return /ACCEPTED|REFUSED/.test(s); },
-                "the verifier should reach a verdict", stepWait);
-    assert.ok(/ACCEPTED/.test(verdict),
-      "the verifier must accept a correctly derived bbs-2023 proof. Said: " +
-          verdict);
+    const verdict = await common.verdictOfWhatWasSent(driver, { By: By,
+      until: until, wait: stepWait, verifierBase: verifierBase });
+    assert.ok(verdict.ok,
+      "the verifier must accept a correctly derived bbs-2023 proof. Its " +
+          "verdict: " + JSON.stringify(verdict));
     const recheck = await waitForStatus(driver, "vp_recheck_status",
       function (s) { return s.trim() !== ""; },
                 "the wallet should re-check what it sent", stepWait);
     assert.ok(/all pass/.test(recheck),
               "the wallet's own checks should pass. Said: " + recheck);
-    log.info("[step3] OK — " + verdict.trim().slice(0, 90));
+    log.info("[step3] OK — the Verifier accepted it, " +
+             (verdict.checks || []).length + " check(s).");
 
     const errors = await severeErrors(driver);
     assert.strictEqual(errors.length, 0, "the pages logged browser errors:\n" +

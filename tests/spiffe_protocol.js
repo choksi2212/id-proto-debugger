@@ -1420,18 +1420,27 @@ async function testNoIdentityPath(adminBase, restore) {
   const answer = await call({ address: WORKLOAD_ADDRESS, service: "workload",
     method: "FetchJWTSVID",
     request: { audience: ["spiffe://" + TRUST_DOMAIN + "/aud-" + STAMP] } });
+  // PERMISSION_DENIED, and not an empty list: SPIFFE Workload API sections
+  // 5.2.1, 5.2.2, 6.2.1 and 6.2.2 say a server SHOULD refuse a client
+  // entitled to nothing that way, and SPIRE does (iya-sts #274). This job
+  // asserted the empty list while iya-sts answered with one.
   check("with autoCreateEntries off and nothing matching, a workload is " +
-    "answered with an EMPTY SVID LIST rather than having an identity " +
-    "invented for it — what a real agent says to an unregistered workload, " +
-    "and a path most client libraries have and almost nobody runs",
+    "REFUSED PERMISSION_DENIED rather than having an identity invented for " +
+    "it — what a real agent says to an unregistered workload, and a path " +
+    "most client libraries have and almost nobody runs",
     function () {
-      assert.ok(answer.ok, answer.status.details);
-      const svids = (answer.messages[0] || {}).svids || [];
+      const svids = ((answer.messages || [])[0] || {}).svids || [];
       assert.strictEqual(svids.length, 0,
         "an identity was handed out to a caller matching no entry while " +
         "autoCreateEntries was off: " + JSON.stringify(svids.map(function (s) {
           return s.spiffe_id;
         })));
+      assert.ok(!answer.ok,
+        "a caller entitled to nothing was answered OK; the specification " +
+        "says PERMISSION_DENIED");
+      assert.strictEqual((answer.status || {}).name, "PERMISSION_DENIED",
+        "the refusal should be PERMISSION_DENIED and is " +
+        JSON.stringify(answer.status));
     });
 
   check("and the three SEEDED entries did not match either, because their " +

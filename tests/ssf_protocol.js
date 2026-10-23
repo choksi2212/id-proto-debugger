@@ -655,7 +655,7 @@ async function theThreeStatusesBehaveDifferently() {
   await drain(poll, id);
   await call('POST', verify.url, { stream_id: id, state: 'while-enabled' },
       {});
-  const whileEnabled = await drain(poll, id);
+  const whileEnabled = await drainUntil(poll, id, 'while-enabled');
   check('an enabled stream delivers', function () {
     assert.ok(whileEnabled.length > 0,
         'A verification event was asked for on an enabled stream and nothing ' +
@@ -685,7 +685,7 @@ async function theThreeStatusesBehaveDifferently() {
     });
 
   await call('POST', status.url, { stream_id: id, status: 'enabled' }, {});
-  const afterResume = await drain(poll, id);
+  const afterResume = await drainUntil(poll, id, 'while-paused');
   check('and what happened while it was paused is STILL THERE', function () {
     assert.ok(afterResume.length > 0,
         'The event asked for while the stream was paused was lost. A pause ' +
@@ -703,6 +703,7 @@ async function theThreeStatusesBehaveDifferently() {
 
   await call('POST', verify.url, { stream_id: id, state: 'before-disable' },
       {});
+  await waitUntilQueued(poll, id, 'before-disable');
   await call('POST', status.url,
       { stream_id: id, status: 'disabled', reason: 'gone' }, {});
   await call('POST', status.url, { stream_id: id, status: 'enabled' }, {});
@@ -750,6 +751,68 @@ async function drain(pollUrl, streamId) {
   return out;
 }
 
+// The `state` a verification event carries back, or undefined.
+function verificationStateOf(one) {
+  log.debug("Entering verificationStateOf().");
+  const parsed = ssf.parseSet(one.token);
+  const payload = parsed.ok
+    ? (parsed.claims.events || {})[events.SSF_PREFIX + 'verification'] : null;
+  log.debug("Leaving verificationStateOf().");
+  return (payload || {}).state;
+}
+
+// A VERIFICATION EVENT IS DELIVERED ASYNCHRONOUSLY (iya-sts #144, SSF 1.0
+// section 8.1.4.2): the 204 says only that the transmitter "has transmitted
+// the event or will do so at some point in the future". So a poll made the
+// instant after it may find the queue still empty. This drains until the
+// event carrying `state` has arrived, or the deadline passes, and answers
+// everything it collected — acknowledged, as drain() does.
+async function drainUntil(pollUrl, streamId, state, timeoutMs) {
+  log.debug("Entering drainUntil(). " + streamId + " " + state);
+  const deadline = Date.now() + (timeoutMs || 15000);
+  let out = [];
+  for (;;) {
+    out = out.concat(await drain(pollUrl, streamId));
+    const arrived = out.some(function (one) {
+      return verificationStateOf(one) === state;
+    });
+    if (arrived || Date.now() >= deadline) {
+      log.debug("Leaving drainUntil(). " + out.length + ", arrived=" +
+                arrived);
+      return out;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 250);
+    });
+  }
+}
+
+// Whether the event carrying `state` is QUEUED, asked with a poll that
+// acknowledges nothing, so it stays where it is (RFC 8936 section 2.4: an
+// unacknowledged event is offered again). Used before a disable, which must
+// meet the event already on the queue for "a disable drops what was
+// waiting" to say anything.
+async function waitUntilQueued(pollUrl, streamId, state, timeoutMs) {
+  log.debug("Entering waitUntilQueued(). " + streamId + " " + state);
+  const deadline = Date.now() + (timeoutMs || 15000);
+  for (;;) {
+    const answer = await call('POST', pollUrl, ssf.buildPollRequest({
+      streamId: streamId, maxEvents: 50, returnImmediately: true }), {});
+    const read = answer.status === 200
+      ? ssf.readPollResponse(answer.body) : { jtis: [], sets: {} };
+    const queued = read.jtis.some(function (jti) {
+      return verificationStateOf({ token: read.sets[jti] }) === state;
+    });
+    if (queued || Date.now() >= deadline) {
+      log.debug("Leaving waitUntilQueued(). " + queued);
+      return queued;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 250);
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 6. DELIVERY.
 // ---------------------------------------------------------------------------
@@ -763,7 +826,10 @@ async function theVerificationEventIsWellFormed() {
   await drain(poll, id);
   await call('POST', verify.url, { stream_id: id, state: 'a-state-value' },
       {});
-  const got = await drain(poll, id);
+  const got = (await drainUntil(poll, id, 'a-state-value'))
+      .filter(function (one) {
+        return verificationStateOf(one) === 'a-state-value';
+      });
   assert.ok(got.length > 0, 'No verification event came back.');
   const parsed = ssf.parseSet(got[0].token);
   check('it is a compact JWS', function () {
@@ -1022,7 +1088,7 @@ async function theDefectsAreReachable() {
     subject: { format: 'iss_sub', iss: 'https://i/',
       sub: 'alice' } }, {});
   await call('POST', verify.url, { stream_id: id, state: 'legacy' }, {});
-  const withLegacy = await drain(poll, id);
+  const withLegacy = await drainUntil(poll, id, 'legacy');
   check('ssf.legacySubClaim is REPORTED as a finding rather than accepted',
     function () {
       // The verification event carries no subject, so the legacy claim only
@@ -1039,7 +1105,7 @@ async function theDefectsAreReachable() {
   await setSetting('ssf.breakSetSignature', 'true');
   await drain(poll, id);
   await call('POST', verify.url, { stream_id: id, state: 'broken' }, {});
-  const broken = await drain(poll, id);
+  const broken = await drainUntil(poll, id, 'broken');
   await setSetting('ssf.breakSetSignature', 'false');
   if (!broken.length) {
     skip('the broken signature', 'no event came back to check.');

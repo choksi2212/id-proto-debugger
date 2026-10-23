@@ -91,6 +91,11 @@ services:
       # belongs on this side. `oid4vp.walletUrl` is DERIVED from this one (see
       # sts/common/config.js), so the verifier's hand-back follows.
       - OID4VCI_WALLET_URL=https://localhost:3000
+      # iya-sts appends no page to the wallet URL since #594: a web
+      # wallet whose pages are not its root names them. These are the
+      # debugger's own two.
+      - OID4VCI_WALLET_ISSUANCE_PATH=/vc-issuance-1.html
+      - OID4VP_WALLET_PRESENTATION_PATH=/vc-presentation-1.html
       # The debugger's origin, which the mock's CORS allowlist has had to be
       # told since iya-sts 2f9825f (2026-09-13) — before it every response
       # carried `Access-Control-Allow-Origin: *`. Without it every call a page

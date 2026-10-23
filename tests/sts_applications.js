@@ -1156,6 +1156,145 @@ async function delegateAll(base, specs) {
   return made;
 }
 
+// ---------------------------------------------------------------------------
+// WHO MAY ACT FOR WHOM: iya-sts's DELEGATION POLICY (its #108 and #186).
+//
+// `delegate()` above is the OAuth PERMISSION register — which scopes a client
+// may ask for on another application's API. This is a different register and
+// it governs a different question: whether one party may ACT for a subject
+// toward another at all. Since #186 iya-sts asks one issuance policy for every
+// RFC 8693 token exchange, every WS-Trust OnBehalfOf / ActAs, every Kerberos
+// S4U2Self / S4U2Proxy and GNAP's two acts, over attributes on the
+// application entries — so a delegation hop that worked against an
+// unconfigured registry is refused (Kerberos in every mode; the others in
+// product, and recorded as "WOULD HAVE BEEN REFUSED" in development).
+//
+// The attributes, as that service's common/CLAUDE.md (3az) names them:
+//
+//   appAllowedToDelegateTo     on S (or the actor): the applications it may
+//                              hand a subject to — msDS-AllowedToDelegateTo
+//   appAllowedToActOnBehalfOf  on R: who it accepts acting for others —
+//                              msDS-AllowedToActOnBehalfOfOtherIdentity
+//   appDelegationSemantics     on an actor: `delegation` and/or
+//                              `impersonation`; EMPTY means delegation only,
+//                              and in Kerberos `impersonation` is what makes
+//                              an S4U2Self ticket forwardable
+//
+// This suite tests the DEBUGGER, so the configuration is deliberately
+// PERMISSIVE: both semantics on every actor, so a job's choice of OnBehalfOf
+// or ActAs is never what decides. Every write is `add`, which is idempotent
+// and safe to race with a sibling job naming the same entry. The default
+// semantics is left alone for that reason — two jobs would fight over one
+// value, and a request that names its semantics never reads it.
+//
+// `create` (optional) makes the entry when there is none — a Kerberos service
+// nothing has sighted yet — with the fields given; without it a missing entry
+// is a failure, because a policy written onto nothing is a hop that will be
+// refused as an unregistered target.
+// ---------------------------------------------------------------------------
+var BOTH_SEMANTICS = ["delegation", "impersonation"];
+
+async function allowDelegation(base, spec) {
+  log.debug("Entering allowDelegation(). application=" +
+            (spec && spec.application));
+  if (!base) {
+    log.debug("Leaving allowDelegation(). No iya-sts base.");
+    return null;
+  }
+  assert.ok(spec && spec.application,
+    "allowDelegation() needs the application whose entry carries the rule.");
+  var identifier = String(spec.application);
+  var wants = {
+    appDelegationSemantics: (spec.semantics || BOTH_SEMANTICS).map(String),
+    appAllowedToDelegateTo: (spec.delegatesTo || []).map(String),
+    appAllowedToActOnBehalfOf: (spec.acceptsFrom || []).map(String)
+  };
+
+  var entry = await entryOf(base, identifier);
+  if (!entry && spec.create) {
+    var made = await adminPost(base, "/applications/create", {
+      identifier: identifier,
+      name: spec.create.name || identifier,
+      protocols: spec.create.protocols || [],
+      fields: spec.create.fields || {}
+    });
+    assert.ok(made.ok || (made.errors || []).some(function (one) {
+      return /already in this registry/i.test(String(one));
+    }), "creating \"" + identifier + "\" to carry its delegation rule was " +
+        "refused: " + JSON.stringify(made.errors || made));
+    entry = await entryOf(base, identifier);
+  }
+  assert.ok(entry,
+    "iya-sts's registry has no application \"" + identifier + "\" to carry " +
+    "a delegation rule. Provision it first: the policy refuses a hop to or " +
+    "from an application it does not know.");
+
+  var names = Object.keys(wants);
+  for (var n = 0; n < names.length; n++) {
+    var name = names[n];
+    if (!wants[name].length) {
+      continue;
+    }
+    if (!(await registryEditable(base, name))) {
+      log.warn("[delegation] iya-sts's registry does not know " + name +
+               ", so " + identifier + " is left without it. That service " +
+               "predates its delegation policy (#108, #186).");
+      continue;
+    }
+    for (var v = 0; v < wants[name].length; v++) {
+      var added = await adminPost(base, "/applications/add", {
+        application: identifier, attribute: name, value: wants[name][v]
+      });
+      assert.ok(added.ok,
+        "adding " + name + "=" + wants[name][v] + " to \"" + identifier +
+        "\" was refused: " + JSON.stringify(added.errors || added));
+    }
+  }
+
+  // Read back: what the registry holds, not what the writes said.
+  var after = await entryOf(base, identifier);
+  names.forEach(function (name) {
+    var held = valuesOf(heldValues(((after || {}).fields || {})[name]));
+    wants[name].forEach(function (value) {
+      if (!editableByBase[base] || !editableByBase[base][name]) {
+        return;
+      }
+      assert.ok(held.indexOf(value) >= 0,
+        "\"" + identifier + "\" should hold " + name + "=" + value +
+        " and holds " + JSON.stringify(held) + ".");
+    });
+  });
+  log.info("[delegation] " + identifier + ": semantics " +
+           wants.appDelegationSemantics.join(", ") +
+           (wants.appAllowedToDelegateTo.length
+             ? "; delegates to " + wants.appAllowedToDelegateTo.join(", ")
+             : "") +
+           (wants.appAllowedToActOnBehalfOf.length
+             ? "; accepts " + wants.appAllowedToActOnBehalfOf.join(", ")
+             : "") +
+           (spec.why ? " — " + spec.why : "") + ".");
+  log.debug("Leaving allowDelegation().");
+  return after;
+}
+
+// One hop, both ends: the actor (which is S wherever the token it presents was
+// issued to it) delegates to the target, and the target accepts the actor.
+// Writing both halves means the hop is allowed whichever of the policy's two
+// routes — S's list or R's — it is judged by.
+async function allowHop(base, spec) {
+  log.debug("Entering allowHop(). " + (spec && spec.actor) + " -> " +
+            (spec && spec.target));
+  if (!base) {
+    log.debug("Leaving allowHop(). No iya-sts base.");
+    return;
+  }
+  await allowDelegation(base, { application: spec.actor,
+    delegatesTo: [spec.target], create: spec.createActor, why: spec.why });
+  await allowDelegation(base, { application: spec.target,
+    acceptsFrom: [spec.actor], create: spec.createTarget, why: spec.why });
+  log.debug("Leaving allowHop().");
+}
+
 // Several applications, in order. Sequential rather than concurrent on purpose:
 // they are three or four sub-second calls each, and a Promise.all here would
 // interleave writes to one registry for no gain that anybody would notice.
@@ -1372,5 +1511,9 @@ module.exports = {
   expose: expose,
   grantPermissions: grantPermissions,
   delegate: delegate,
-  delegateAll: delegateAll
+  delegateAll: delegateAll,
+  // iya-sts's delegation POLICY — who may act for whom, as opposed to which
+  // permissions a client holds.
+  allowDelegation: allowDelegation,
+  allowHop: allowHop
 };

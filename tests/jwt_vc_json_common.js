@@ -581,6 +581,82 @@ async function startAtTheVerifierWebsite(driver, opts) {
   log.debug("Leaving startAtTheVerifierWebsite().");
 }
 
+// A PRE-AUTHORIZED CREDENTIAL OFFER, MADE THE WAY A PERSON MAKES ONE.
+//
+// A pre-authorized code IS the authorization for a credential about the
+// person it names, so iya-sts makes one only for the person asking, on
+// their own account page (`/portal/wallet`, iya-sts #589). The demonstration
+// issuer page that used to make one for a configured `oid4vci.offerUsername`
+// is gone (#594). So: sign the person in at the portal, choose the
+// configuration and the mode — `cross-device` (H.2) or `deferred` (H.3) — and
+// read what the page shows: the Transaction Code, and the offer URI behind
+// the QR code (by reference, `credential_offer_uri`). The browser is left on
+// the portal page; the caller hands the offer to the wallet.
+//
+// `opts`: { By, until, stsBase, username, password, mode, configuration,
+// wait, consentScreen }. Answers { txCode, offerUri, qr, page, username }.
+async function offerFromThePortalWallet(driver, opts) {
+  log.debug("Entering offerFromThePortalWallet(). mode=" + opts.mode);
+  const By = opts.By;
+  const until = opts.until;
+  const base = String(opts.stsBase).replace(/\/+$/, "");
+  const portal = base + "/portal/wallet";
+  // NOBODY SIGNED IN FIRST. The portal signs in through iya-sts's own
+  // /oauth2/authorize, so a sign-on session an earlier step of the same job
+  // left in this browser lets it straight in as THAT person, with no
+  // screen — and the offer is then made for them rather than for
+  // `opts.username`. So iya-sts's cookies go before the portal is opened.
+  // WebDriver deletes the cookies of the page it is on, which is why a page
+  // of that origin is loaded first.
+  await driver.get(base + "/healthcheck");
+  await driver.manage().deleteAllCookies();
+  await driver.get(portal);
+  await driver.wait(async function () {
+    return (await driver.findElements(By.id("wallet-make"))).length > 0 ||
+           (await driver.findElements(By.id("username"))).length > 0;
+  }, opts.wait, "the portal's wallet page drew neither its form nor the " +
+      "sign-in screen.");
+  assert.ok((await driver.findElements(By.id("username"))).length > 0,
+    "the portal let this browser in with no sign-in screen although its " +
+    "cookies for " + base + " were cleared, so the offer would be made for " +
+    "somebody other than " + opts.username + ".");
+  await driver.findElement(By.id("username")).sendKeys(opts.username);
+  await driver.findElement(By.id("password"))
+      .sendKeys(opts.password || "any-password");
+  await driver.findElement(By.id("kc-login")).click();
+  if (opts.consentScreen) {
+    await opts.consentScreen.passInBrowser(driver, By);
+  }
+  await driver.wait(until.elementLocated(By.id("wallet-make")), opts.wait,
+    "the portal's wallet page should offer to make an offer (#wallet-make).");
+  const chosen = await driver.executeScript(
+    "var c = document.querySelector('input[name=configuration][value=\"' +" +
+    "  arguments[0] + '\"]');" +
+    "var m = document.querySelector('input[name=mode][value=\"' +" +
+    "  arguments[1] + '\"]');" +
+    "if (!c || !m) { return Array.prototype.map.call(" +
+    "  document.querySelectorAll('input[name=configuration],input[name=mode]')," +
+    "  function (i) { return i.name + '=' + i.value; }); }" +
+    "c.click(); m.click(); return true;",
+    opts.configuration, opts.mode);
+  assert.strictEqual(chosen, true,
+    "the portal's wallet page does not offer " + opts.configuration + " in " +
+    "mode " + opts.mode + "; it offers " + JSON.stringify(chosen) + ".");
+  await driver.findElement(By.id("wallet-make")).click();
+  await driver.wait(until.elementLocated(By.id("tx_code")), opts.wait,
+    "making the offer should draw it, with its Transaction Code (#tx_code).");
+  const shown = await driver.executeScript(
+    "var qr = document.getElementById('offer_qr');" +
+    "return { txCode: document.getElementById('tx_code').textContent.trim()," +
+    "  offerUri: document.getElementById('offer_uri').textContent.trim()," +
+    "  qr: qr ? qr.tagName.toLowerCase() : ''," +
+    "  page: document.body.textContent };");
+  log.debug("Leaving offerFromThePortalWallet(). " +
+            shown.offerUri.slice(0, 60));
+  return { txCode: shown.txCode, offerUri: shown.offerUri, qr: shown.qr,
+           page: shown.page, username: opts.username };
+}
+
 // A REQUEST, GOT THE WAY A PERSON GETS ONE: the Verifier's website, its
 // form, and the redirect to the wallet. Answers what the wallet was handed —
 // `{ params, location, query }` parsed off the URL the browser landed on —
@@ -613,6 +689,31 @@ async function verificationResult(verifierBase, state) {
       encodeURIComponent(state));
   log.debug("Leaving verificationResult(). " + r.status);
   return r;
+}
+
+// THE VERIFIER'S VERDICT ON WHAT THE PAGES JUST SENT. Presentation step 3
+// shows what the Verifier ANSWERED — all OID4VP gives a wallet — and the
+// check-by-check verdict is the Verifier's own record, read here where an
+// operator reads it (`/admin-api/verifications?state=`), by the `state` the
+// wallet kept with what it sent. Waits for step 3 to report the answer first.
+// `opts`: { By, until, wait, verifierBase, waitForStatus }.
+async function verdictOfWhatWasSent(driver, opts) {
+  log.debug("Entering verdictOfWhatWasSent().");
+  await driver.wait(async function () {
+    const t = await driver.findElement(opts.By.id("vp_verifier_status"))
+        .getText();
+    return /accepted the response|refused the response/.test(t);
+  }, opts.wait, "step 3 never reported what the Verifier answered.");
+  const state = await driver.executeScript(
+    "var p = JSON.parse(localStorage.getItem('sdjwtvp_presentation') || " +
+    "'{}'); return p.state || '';");
+  assert.ok(state, "step 3 holds no state for what was sent, so the " +
+            "Verifier's verdict on it cannot be looked up.");
+  const doc = await verdictFor(opts.verifierBase, state);
+  assert.ok(doc.verdict, "the Verifier has recorded no verdict for state " +
+            state + ": " + JSON.stringify(doc).slice(0, 300));
+  log.debug("Leaving verdictOfWhatWasSent(). ok=" + doc.verdict.ok);
+  return doc.verdict;
 }
 
 // A fresh Authorization Request from iya-sts's Verifier, asking for
@@ -765,6 +866,8 @@ module.exports = {
   startVerification: startVerification,
   startAtTheVerifierWebsite: startAtTheVerifierWebsite,
   requestThroughTheVerifierWebsite: requestThroughTheVerifierWebsite,
+  offerFromThePortalWallet: offerFromThePortalWallet,
   verificationResult: verificationResult,
+  verdictOfWhatWasSent: verdictOfWhatWasSent,
   verdictFor: verdictFor
 };

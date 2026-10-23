@@ -2253,95 +2253,6 @@ function buildJobs() {
     env: {},
   });
 
-  // The AS exchange end to end: the wallet-side codec (common/krb5) against the
-  // mock KDC (the sts/ submodule), over a real socket, through the api's relay. It
-  // starts the KDC in-process on an ephemeral port, so it needs no docker and no
-  // running service.
-  //
-  // This is the first test that puts a CLIENT and a KDC on opposite ends of a wire
-  // and makes them agree — a different claim from the vector tests, because the two
-  // disagree in ways neither can detect alone: a key usage number one folds in and
-  // the other does not, a salt one derives from the principal name and the other
-  // from configuration, a nonce one echoes and the other regenerates. It is still
-  // NOT proof of interoperability: both ends are this repository's code, and the
-  // interoperability evidence is the MIT krb5 / Samba AD exchange in phase 4.
-  //
-  // Most of it is the negative half, which is the product: KDC_ERR_ETYPE_NOSUPP to
-  // an RC4-only client against a hardened account (the 2026 case), a locked
-  // account, an expired password, a wrong salt reported as PREAUTH_FAILED with
-  // ETYPE-INFO2 re-sent so the client can find out, and a clock outside the
-  // tolerance. Mutation-tested: nine deliberate defects in the KDC, all caught —
-  // including a regenerated nonce, a pre-authent flag set when no pre-authentication
-  // happened, and a computer account salted like a user.
-  // Node only, never skipped.
-  jobs.push({
-    name: "Kerberos AS exchange (the codec against the mock KDC: the two-message dance, refusals)",
-    script: "krb5_as_exchange.js",
-    env: {},
-  });
-
-  // The rest of the protocol: TGS then AP, with mutual authentication and
-  // per-message tokens. The client is common/krb5; the KDC and the protected service
-  // are the sts/ submodule's, started in-process on ephemeral ports so this needs no
-  // docker and no running service.
-  //
-  // The AS test gets a TGT, which is the easy half. This one is a ticket being
-  // PRESENTED to something that decrypts it, checks it, and proves itself back —
-  // until something does that, "the ticket looks right" is the strongest claim
-  // available about any of it.
-  //
-  // Four things here fail in ways nothing else catches: a TGS-REQ carries the TGT
-  // inside a PA-TGS-REQ whose value is an entire AP-REQ, whose Authenticator
-  // checksums the ENCODED request body (re-encode it and the checksum covers
-  // something else); the TGS-REP is at key usage 8 or 9 depending on whether a subkey
-  // was sent, and both paths are exercised; the 0x8003 checksum is not a checksum and
-  // its integers are LITTLE-endian; and mutual authentication is an ECHO that has to
-  // be CHECKED, not merely requested.
-  //
-  // It found a real bug on its first run: KerberosTime carries no fractional seconds,
-  // so the wire ctime is truncated to the second and the client was comparing the
-  // AP-REP's echo against a millisecond-precision Date — accusing a correct service
-  // of not being itself.
-  //
-  // The negatives are the point: a replayed Authenticator, a ticket for the wrong
-  // service, a stale key version, a request body swapped after signing, a clock
-  // outside the tolerance, a checksum that is not 0x8003, and a forged echo.
-  // Mutation-tested: the KDC's checksum check, the service's replay cache, its
-  // ticket-is-for-me check, and the 0x8003 byte order — all caught.
-  //
-  // Phases 4 and 5 grew it well beyond its name, because each addition needs the live
-  // exchange rather than a fixture:
-  //
-  //  * **the PAC the KDC actually minted**, in BOTH kinds of ticket. In a TGT the service
-  //    key and the krbtgt key are the same key, so a KDC using the wrong one for the
-  //    server signature passes every TGT test ever written and issues service tickets no
-  //    Windows service accepts. Only the service ticket separates them.
-  //  * **cross-realm referrals**, chased end to end: a referral is an ordinary successful
-  //    TGS-REP whose `sname` is not what was asked for, and a client that does not compare
-  //    those two presents a ticket-granting ticket to a web server. The PAC is re-signed by
-  //    the target realm, and the test proves the OLD signatures no longer verify — if they
-  //    did, nothing had been re-signed.
-  //  * **S4U2Self and S4U2Proxy, authorized both ways**: classic constrained delegation
-  //    (`msDS-AllowedToDelegateTo` on the front end) and RBCD (`msDS-AllowedToActOn-
-  //    BehalfOfOtherIdentity` on the back end), with the asymmetries that make RBCD the
-  //    easier path — and five refusals, without which the successes prove nothing.
-  //  * **renewals**, which preserve authtime and cap at renew-till. That test contains the
-  //    only deliberate sleep in the file: KerberosTime has one-second resolution and the
-  //    test runs inside one second, so without a clock boundary a KDC that reset authtime
-  //    on renewal produced an identical value and the mutation went undetected.
-  //
-  // Thirty-three further mutations were used to develop those sections and all thirty-three
-  // fail them. Four were caught only after the test was strengthened, each a real gap: a
-  // realm-aware principal lookup that needed a client NATIVE to the second realm, a PAC
-  // domain SID nothing asserted, the delegation flag that is invisible where it is set, and
-  // a vacuous authtime comparison that compared a value with itself.
-  // Node only, never skipped.
-  jobs.push({
-    name: "Kerberos TGS + AP, the PAC, cross-realm referrals, S4U delegation and renewals",
-    script: "krb5_tgs_ap.js",
-    env: {},
-  });
-
   // The Kerberos codec exists TWICE — common/krb5 for the browser and the api, and
   // a vendored copy in the sts/ submodule for the KDC, because compose builds that
   // service with `context: ./sts` and a Docker build cannot COPY from outside its
@@ -2389,32 +2300,6 @@ function buildJobs() {
   jobs.push({
     name: "SPNEGO codec (RFC 4178's NegTokenInit and NegTokenResp, byte by byte)",
     script: "krb5_spnego_codec.js",
-    env: {},
-  });
-
-  // SPNEGO over HTTP end to end: RFC 4559 carrying RFC 4178 carrying RFC 4121
-  // carrying an AP-REQ. Node only — the mock KDC and the mock's Express app are
-  // started in-process on ephemeral ports — so it never skips.
-  //
-  // The NEGATIVES are the substantial half, deliberately: an acceptor that
-  // authenticates a good client looks finished and is worth very little. Ten of
-  // them, and the two that nothing else could catch are a mechListMIC computed
-  // over the `[0]`-tagged list (the ticket is perfect and the request is
-  // refused) and an edited mechanism list (everything else about the request is
-  // valid, which is exactly why the MIC is the only thing that can notice —
-  // that is the downgrade RFC 4178 section 5 exists to stop). The rest: no
-  // mechanism in common in both directions, a list with no token answered
-  // accept-incomplete rather than reject, a tampered MIC, a replayed AP-REQ, a
-  // ticket for another service, a TGT presented as one, a Basic Authorization
-  // header, bytes that are not a token, and a continuation with nothing to
-  // continue. Each asserts WHICH check fired, not merely that something was
-  // refused — and the ones carrying a KRB-ERROR assert the error code inside
-  // the responseToken, because SPNEGO's negState has no reason field at all and
-  // an acceptor that swallows the mechanism's error leaves a rejection
-  // indistinguishable from a wrong password.
-  jobs.push({
-    name: "SPNEGO over HTTP (the handshake, and the ten negatives that make an acceptor worth anything)",
-    script: "krb5_spnego_http.js",
     env: {},
   });
 
@@ -2478,10 +2363,12 @@ function buildJobs() {
     env: {},
   });
 
-  // Delegation, run TWICE — once per KDC — because that is the only way a
-  // divergence between the mock and Active Directory becomes visible.
+  // Delegation against a REAL Windows KDC. It ran twice, once per KDC, until
+  // 2026-10-23, when the iya-sts half moved to that service's own suite (it
+  // tested iya-sts rather than this debugger); what follows is why there were
+  // two.
   //
-  // tests/krb5_tgs_ap.js already drives S4U against the mock, and harder: it
+  // iya-sts's own suite drives S4U against its KDC, and harder: it
   // forges tickets and swaps keys, which no real domain controller can be asked
   // to do. But it only ever asks the mock, and the mock was written from the
   // same reading of [MS-SFU] as the client it checks — so a shared misreading
@@ -2494,7 +2381,9 @@ function buildJobs() {
   // same terms as krb5_real_dc.js: it costs money and no launcher starts it.
   {
     const delegationIdps = [
-      { key: "mock", label: "mock KDC", skip: null, env: {} },
+      // The iya-sts half (the in-process KDC) moved to iya-sts's own suite
+      // on 2026-10-23: it tested that service rather than this debugger.
+      // The Windows half stays — it drives this project's Kerberos client.
       {
         key: "windows",
         label: "real Windows KDC",
@@ -2539,7 +2428,7 @@ function buildJobs() {
   //
   // It has already earned its place. The capture showed that Windows Server
   // 2025 sends NO s2kparams in ETYPE-INFO2 — it relies on the RFC 3962 default
-  // — while the mock KDC always sends one and krb5_as_exchange.js asserts it is
+  // — while iya-sts's KDC always sends one and its own suite asserts it is
   // there. A client that required the field would pass this whole suite and
   // fail against every real domain, reporting a wrong password. Never skipped:
   // the capture is committed.
@@ -2629,7 +2518,7 @@ function buildJobs() {
     env: {},
   });
 
-  // The Kerberos AS exchange PAGE. krb5_as_exchange.js already drives the same
+  // The Kerberos AS exchange PAGE. iya-sts's own suite drives the same
   // exchange with no browser, so this job covers only what needs one: that the
   // bundle is registered in BOTH client/build.js and client/Dockerfile, that the
   // api's CORS allowlist actually lets the page call POST /krb5/kdc (a failure no
@@ -2706,8 +2595,8 @@ function buildJobs() {
   jobs.push(tgsApPageJob);
 
   // The SPNEGO page, and the two pages a user is ROUTED THROUGH to feed it.
-  // krb5_spnego_http.js already drives the protocol harder than this does with
-  // no browser, so this job covers only what needs one:
+  // iya-sts's own suite drives the protocol harder than this does with no
+  // browser, so this job covers only what needs one:
   //
   //  * **the routing loop**, which is the whole reason this is a workflow. The
   //    SPNEGO page cannot obtain a ticket — that is the AS page and then the
@@ -3438,8 +3327,8 @@ function buildJobs() {
   jobs.push(spiffePageJob);
 
   // The DELEGATION page: S4U2Self, S4U2Proxy with both authorization routes, forwarding
-  // and renewal. tests/krb5_tgs_ap.js already drives every one of those exchanges with no
-  // browser, so this job covers only what needs one:
+  // and renewal. iya-sts's own suite drives every one of those exchanges with
+  // no browser, so this job covers only what needs one:
   //
   //  * **the credential handoff** — the service's own TGT comes from the AS page and the
   //    evidence ticket from S4U2Self is stored for S4U2Proxy to find, under keys the
@@ -3480,6 +3369,9 @@ function buildJobs() {
     script: "kerberos_delegation_page.js",
     env: {
       API_URL: env.API_URL || "https://localhost:4000",
+      // iya-sts's management API, where the job writes the delegation rules
+      // its S4U2Self and S4U2Proxy cases need (iya-sts #186).
+      STS_URL: env.STS_URL || "https://localhost:8081",
       KRB5_KDC_HOST: env.KRB5_KDC_HOST || "sts",
       KRB5_KDC_PORT: env.KRB5_KDC_PORT || "88",
     },
@@ -3708,6 +3600,10 @@ function buildJobs() {
         WSTRUST_STS_URL: env.WSTRUST_STS_URL || "",
         OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
       },
+      skip: "SKIPPED BY DECISION until rcbj/id-proto-debugger#366: its " +
+        "fixtures came from iya-sts's GET /did/generate, which iya-sts #594 " +
+        "deleted, and nothing reachable over HTTP now mints a credential " +
+        "under iya-sts's own did:web key.",
     });
     // THE MOCK'S OWN /admin AND /admin-api SURFACE IS NOT TESTED FROM HERE.
     // Four jobs used to sit at this point — sts_metadata.js (the metadata
@@ -3843,15 +3739,6 @@ function buildJobs() {
       name: "UserInfo page reads signed, encrypted and nested responses " +
           "(OIDC Core 5.3.2, in the browser)",
       script: "oidc_userinfo_protected_page.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
-    jobs.push({
-      name: "Client-supplied JWS verification (every advertised algorithm " +
-          "for client assertions and OID4VCI proofs)",
-      script: "sts_jws_verification.js",
       env: {
         WSTRUST_STS_URL: env.WSTRUST_STS_URL,
         OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",

@@ -787,6 +787,14 @@ startDocker()
   # stranger. This asks the mock which of its listeners bound.
   requireStsSpiffeListeners https://localhost:8081 sts
   check_return_code $?
+  # iya-sts's development companion (iya-sts #594, #595): the VC workflows
+  # start at its issuer and Verifier websites and the Kerberos jobs present
+  # tickets to its SPNEGO page and TCP service. This launcher started it, so
+  # a companion that did not stay up fails the run rather than leaving those
+  # jobs to fail one by one for a reason none of them names.
+  CONFIG_FILE=./env/local.js requireComposeServiceRunning local-tests.yml \
+    companion
+  check_return_code $?
 
   # ------------------------------------------------------------------------
   # THE CERTIFICATE, AND THEN THE RFC 9700 REALM. Both need the service to be

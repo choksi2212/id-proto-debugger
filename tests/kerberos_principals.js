@@ -115,4 +115,34 @@ async function principalsDocument(stsUrl) {
     } };
 }
 
-module.exports = { principalsDocument: principalsDocument };
+// WHAT iya-sts's SPNEGO SIGN-IN DOOR SAYS, read off the page it answers.
+// Since iya-sts #575 (2026-10-12) `/authn/spnego`'s bodies are the sign-in
+// surface's shell, drawn in the browser from the state the response carries
+// in `data-sts-state` on `<html>` — `{ view: { door, kind, username,
+// principal, session, subject, flags, amr, acr, ... } }`, `kind`
+// `signed-in` / `challenge` / `off`. The text "Signed in as ..." is drawn by
+// the runtime and is not in the bytes. So a client that runs no script — a
+// job reading the body — reads the state. Accepts the HTML, or text
+// containing it. Answers the `view`, or null when there is none.
+function spnegoDoorView(html) {
+  log.debug("Entering spnegoDoorView().");
+  const found = /data-sts-state="([^"]*)"/.exec(String(html || ""));
+  if (!found) {
+    log.debug("Leaving spnegoDoorView(). No state.");
+    return null;
+  }
+  const text = found[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  let state = null;
+  try {
+    state = JSON.parse(text);
+  } catch (e) {
+    log.debug("Leaving spnegoDoorView(). Not JSON: " + e.message);
+    return null;
+  }
+  log.debug("Leaving spnegoDoorView().");
+  return (state && state.view) || null;
+}
+
+module.exports = { principalsDocument: principalsDocument,
+                   spnegoDoorView: spnegoDoorView };

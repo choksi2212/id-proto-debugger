@@ -948,11 +948,18 @@ function theProtectedPageAcceptsARealTicket() {
     "and the page must name the principal from INSIDE the ticket, which is " +
     "the only evidence the AP-REQ was decrypted rather than merely parsed. " +
     "Body: " + result.body.replace(/\s+/g, " ").slice(0, 400));
-  assert.strictEqual(headerValues(result.headers, "Set-Cookie").length, 0,
+  // The companion keeps a browser session of its own (`companion_sid`), which
+  // is its demonstration bookkeeping and signs nobody in to anything; what
+  // must not appear is a SIGN-ON session — iya-sts's `sts_session`.
+  const signOn = headerValues(result.headers, "Set-Cookie")
+      .filter(function (one) {
+        return !/^\s*companion_sid=/i.test(one);
+      });
+  assert.strictEqual(signOn.length, 0,
     "and the PROTECTED PAGE must mint no session — it authenticates and then " +
     "throws the identity away, which is the whole difference between it and " +
     "the sign-in door in section 9. A Set-Cookie here would mean the two " +
-    "doors had become one.");
+    "doors had become one: " + JSON.stringify(signOn));
   log.info("MIT's GSSAPI authenticated to the protected page, which named " +
       "the principal and set no session");
   log.debug("Leaving theProtectedPageAcceptsARealTicket().");
@@ -968,7 +975,10 @@ async function theTicketSignsThePersonIn() {
   assert.strictEqual(result.httpStatus, 200,
     "`curl --negotiate` could not sign in at " + stsUrl + "/authn/spnego: " +
     result.headers.slice(0, 400));
-  assert.ok(/you are signed in/i.test(result.body),
+  // The page is the sign-in surface's shell since iya-sts #575, drawn in the
+  // browser from the state it carries; curl runs no script, so it reads that.
+  const view = kerberosPrincipals.spnegoDoorView(result.body) || {};
+  assert.strictEqual(view.kind, "signed-in",
     "the door's answer must be the sign-in page rather than the protected " +
     "page's table: " + result.body.replace(/\s+/g, " ").slice(0, 400));
   // The person is the principal with its realm STRIPPED, so that somebody
@@ -978,11 +988,11 @@ async function theTicketSignsThePersonIn() {
   // longer `urn:sts-mock:user:alice` — so it is asked of the directory and
   // compared, which is the same claim: one entry, one `sub` to every relying
   // party, whichever door was used.
-  assert.ok(/Signed in as <strong>alice<\/strong>/.test(result.body),
+  assert.strictEqual(view.username, "alice",
     "and it must name the person the session carries — the principal with " +
-    "its realm STRIPPED: " + result.body.replace(/\s+/g, " ").slice(0, 400));
+    "its realm STRIPPED: " + JSON.stringify(view));
   const subject = await subjectOf("alice");
-  assert.ok(result.body.indexOf(subject) >= 0,
+  assert.strictEqual(view.subject, subject,
     "and it must name the subject the directory holds for alice (" +
     subject + "), so that the password screen and the ticket are ONE " +
     "subject to every relying party: " +

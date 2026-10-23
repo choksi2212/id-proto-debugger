@@ -344,6 +344,17 @@ services:
       # and presentation flows timed out waiting for a page that never loaded.
       # OID4VP_WALLET_URL falls back to this, so one setting covers both.
       - OID4VCI_WALLET_URL=https://client:3000
+      # iya-sts appends no page to the wallet URL since #594: a web
+      # wallet whose pages are not its root names them. These are the
+      # debugger's own two.
+      - OID4VCI_WALLET_ISSUANCE_PATH=/vc-issuance-1.html
+      - OID4VP_WALLET_PRESENTATION_PATH=/vc-presentation-1.html
+      # ONE ACCOUNT PER BROWSER. iya-sts holds several signed-in people per
+      # browser by default since 2026-10-20 (#751), which adds an account-set
+      # cookie, an account switcher on every sign-in page and a "which
+      # account?" step to every sign-out. This suite signs one person in at a
+      # time and tests the debugger, not that switcher, so it is off.
+      - STS_AUTHN_MULTIPLE_ACCOUNTS=false
       # THE SPIRE SERVER API'S PRIVATE UNIX SOCKET, which ships OFF.
       #
       # It is on here for one reason: it is the `local` entity, and `local` is
@@ -640,7 +651,7 @@ services:
   companion:
     container_name: id-proto-debugger-companion
     hostname: companion
-    image: ${COMPANION_IMAGE:-${IMAGE_REGISTRY:-ghcr.io/rcbj/id-proto-debugger}/companion:${IMAGE_TAG:-latest}}
+    image: ${IMAGE_REGISTRY:-ghcr.io/rcbj/id-proto-debugger}/companion:${IMAGE_TAG:-latest}
     build:
       context: ./sts/companion
       additional_contexts: *mirror-contexts

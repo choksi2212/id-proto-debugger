@@ -346,10 +346,13 @@ async function preconditions() {
         "SPNEGO workflow" };
     }
 
+    // Whether the door is open is the setting itself now that the document
+    // that reported it (`/spnego?format=json`) is the companion's.
+    const open = await registry.setting(registry.baseOf(stsUrl),
+                                        "krb5.spnegoAuthentication");
     log.debug("Leaving preconditions(). Ready.");
     return { ok: true, kdcPort: String(table.kdcPort),
-             signInEnabled: advert.signInEnabled !== false,
-             acceptsAnySpnForHosts: advert.acceptsAnySpnForHosts || [] };
+             signInEnabled: open !== false && open !== "false" };
   } catch (e) {
     log.debug("Leaving preconditions(). Unreachable.");
     return { ok: false, why: "could not reach the stack (" + e.message + ")" };
@@ -620,7 +623,11 @@ async function theTicketSignsThePersonIn(driver) {
   // cookie set by something that authenticated nobody.
   await selectTab(driver, "received", "body");
   const body = await textOf(driver, "krb_body_pane");
-  assert.ok(/you are signed in/i.test(body),
+  // The page is the sign-in surface's shell since iya-sts #575, drawn in the
+  // browser from `data-sts-state`; the pane shows the bytes as text, so the
+  // state is what can be read.
+  const view = kerberosPrincipals.spnegoDoorView(body) || {};
+  assert.strictEqual(view.kind, "signed-in",
     "the door's answer must be the sign-in page rather than the protected " +
     "page's table. `/spnego/protected` renders 'who the ticket named' and " +
     "stops; this one renders a session. Got: " +
@@ -635,16 +642,14 @@ async function theTicketSignsThePersonIn(driver) {
   // therefore the same `sub` to every relying party, whichever door they used.
   // The pane shows the body as TEXT, so the name arrives inside the page's
   // own `<strong>` rather than bare; the regexp allows either.
-  const escaped = principal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  assert.ok(new RegExp("Signed in as (<strong>)?" + escaped +
-      "(</strong>)?,").test(body),
+  assert.strictEqual(view.username, principal,
     "and it must name the person the session carries, which is the " +
     "principal with its realm STRIPPED — leaving the realm on would make " +
     "somebody who typed \"" + principal + "\" at the password screen and the " +
     "same person arriving with a ticket two different people. Got: " +
     JSON.stringify(body.slice(0, 400)));
   const subject = await subjectOf(principal);
-  assert.ok(body.indexOf(subject) >= 0,
+  assert.strictEqual(view.subject, subject,
     "and it must name the subject the session carries, which is the one the " +
     "directory holds for \"" + principal + "\" (" + subject + "). Got: " +
     JSON.stringify(body.slice(0, 400)));
@@ -935,20 +940,16 @@ async function theClosedDoorSignsNobodyIn() {
         Array.from(refused.headers.keys()).join(",")),
       "and a closed door must sign nobody in.");
 
-    // AND NOTHING ELSE CHANGES. The protected page still performs the whole
-    // handshake with the door shut — the mock's own refusal page says so, and
-    // a reader who is told that should be able to rely on it.
-    const stillThere = await fetch(stsUrl + "/spnego?format=json");
-    const advert = await stillThere.json();
-    assert.strictEqual(advert.signInEnabled, false,
-      "with the setting off the service should say so in the document a " +
-      "client discovers the door from, rather than continuing to advertise a " +
-      "door that refuses everybody.");
-    assert.ok(advert.protectedResource,
-      "and the protected page must still be published: turning the sign-in " +
-      "off takes the SESSION away and nothing else.");
-    log.info("the closed door answers 403, names the setting, mints nothing, " +
-        "and the protected page is untouched");
+    // The protected page that used to stand beside the door, and the
+    // document that reported whether the door was open, are the companion's
+    // since iya-sts #595; what is left to say is the setting itself.
+    const reported = await registry.setting(registry.baseOf(stsUrl),
+                                            "krb5.spnegoAuthentication");
+    assert.ok(reported === false || reported === "false",
+      "with the door shut iya-sts should report krb5.spnegoAuthentication " +
+      "as false, and it reports " + JSON.stringify(reported) + ".");
+    log.info("the closed door answers 403, names the setting and mints " +
+        "nothing");
   } finally {
     // RESTORED THROUGH `reset` RATHER THAN BY WRITING THE OLD VALUE BACK. A
     // `set` leaves `source: override` behind on that setting for the mock's

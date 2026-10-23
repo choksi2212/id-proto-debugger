@@ -61,6 +61,8 @@ const registry = require("./sts_applications.js");
 const crypto = require("crypto");
 const { Command, Option } = require('commander');
 const { loadUrl } = require("./page_load.js");
+const common = require("./jwt_vc_json_common.js");
+const { usernameFor } = require("./random_username.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
 var bunyan = require("bunyan");
@@ -108,6 +110,12 @@ require("./wait_for").configure({ timeout: fetchWait });
 var stsUrl = process.env.WSTRUST_STS_URL || "https://localhost:8081/sts";
 var issuerBase = process.env.OID4VCI_ISSUER_URL || stsUrl.replace(/\/sts\/?$/,
     "");
+// THE ISSUER'S OWN WEBSITE, where step 0's offer use cases send the End-User:
+// iya-sts's development companion's /issuer (iya-sts #594). Set by the job
+// rather than left to the build's default, which a deployed site does not
+// have.
+var issuerSiteUrl = (process.env.COMPANION_URL || "http://localhost:9700")
+    .replace(/\/+$/, "") + "/issuer";
 var issuerMetadataUrl = issuerBase + "/.well-known/openid-credential-issuer";
 var keycloakBase = process.env.KEYCLOAK_BASE_URL || "http://localhost:8080";
 var realmBase = keycloakBase + "/realms/debugger-testing";
@@ -3658,7 +3666,9 @@ async function credentialOfferSameDevice(driver) {
     "window.localStorage.clear();" +
     "window.localStorage.setItem('vci_credential_issuer', arguments[0]);" +
     "window.localStorage.setItem('vci_metadata_endpoint', arguments[0] + " +
-    "  '/.well-known/openid-credential-issuer');", issuerBase);
+    "  '/.well-known/openid-credential-issuer');" +
+    "window.localStorage.setItem('sdjwtvc_issuer_site_url', arguments[1]);",
+    issuerBase, issuerSiteUrl);
   await driver.navigate().refresh();
   await pageBundleReady(driver);
   await driver.wait(until.elementLocated(By.css("button.vc-usecase")),
@@ -3702,28 +3712,39 @@ async function credentialOfferSameDevice(driver) {
   // ---- the issuer's web page ----------------------------------------------
   await click(driver, By.id("vc_usecase_offer-same-device"));
   await driver.wait(until.urlContains("/issuer"), fetchWait,
-    "choosing the offer use case should take the End-User to the ISSUER, not " +
-        "the wallet.");
+    "choosing the offer use case should take the End-User to the ISSUER'S " +
+        "WEBSITE, not the wallet.");
+  // The issuer's own website — a party in front of iya-sts (its
+  // development companion, iya-sts #594), configured on step 0 as the
+  // "Issuer website URL" — and not a page of the wallet.
   var issuerPage = await driver.getCurrentUrl();
-  assert.ok(issuerPage.indexOf(issuerBase) === 0,
-    "the issuer page should belong to the configured credential issuer. Got: " +
+  assert.ok(issuerPage.indexOf(baseUrl) !== 0,
+    "the issuer's website should not be a page of the wallet. Got: " +
         issuerPage);
-  assert.ok((await driver.findElements(By.linkText("Request your " +
-            "digital diploma"))).length,
-    "the issuer page should carry the offer link H.1 describes.");
-  log.info("[H.1] OK — the flow starts on the issuer page at " + issuerPage +
-           ".");
+  var offerIt = By.css("a[href*='/issuer/offer?configuration=" +
+                       "IdentityCredential']");
+  assert.ok((await driver.findElements(offerIt)).length,
+    "the issuer's website should offer the IdentityCredential (an " +
+        "\"Offer it\" link to /issuer/offer?configuration=IdentityCredential).");
+  log.info("[H.1] OK — the flow starts on the issuer's website at " +
+           issuerPage + ".");
 
   // Everything the offer is supposed to supply is pointed somewhere WRONG
   // first, so the assertions below cannot be satisfied by what step 1 left
   // behind or by this deployment's defaults.
   await misconfigureTheWallet(driver);
   await driver.get(issuerPage);
-  await driver.wait(until.elementLocated(By.linkText("Request your " +
-                    "digital diploma")), waitTime);
+  await driver.wait(until.elementLocated(offerIt), waitTime);
 
   // ---- following the link hands the wallet an offer ------------------------
-  await click(driver, By.linkText("Request your digital diploma"));
+  // "Offer it" draws the Credential Offer; "Open in your wallet" (#wallet-link)
+  // carries it to the wallet on this device, by value.
+  await click(driver, offerIt);
+  await driver.wait(until.elementLocated(By.id("wallet-link")), fetchWait,
+    "the issuer's offer page should link to the wallet on this device " +
+        "(#wallet-link) — it does where the issuer knows the wallet's address.");
+  var offerPage = await driver.getCurrentUrl();
+  await click(driver, By.id("wallet-link"));
   // If the hand-off does not arrive, say WHERE the browser ended up. The issuer
   // builds that URL from OID4VCI_WALLET_URL, whose default
   // (http://localhost:3000) is right only when the browser and the wallet share
@@ -3771,13 +3792,18 @@ async function credentialOfferSameDevice(driver) {
   assert.deepStrictEqual(offer.credential_configuration_ids,
                          ["IdentityCredential"],
     "the offer should name the credential on offer.");
-  var issuerState = ((offer.grants || {}).authorization_code ||
-      {}).issuer_state;
-  assert.ok(issuerState, "an H.1 offer uses the authorization_code grant and " +
-            "carries an issuer_state.");
+  assert.ok(offer.grants && offer.grants.authorization_code,
+    "an H.1 offer uses the authorization_code grant. Got: " +
+        JSON.stringify(offer.grants));
+  // issuer_state is OPTIONAL (OID4VCI 1.0 section 4.1.1), and an issuer's
+  // website that holds no session with the authorization server — iya-sts's
+  // companion is one — sends none. Where one is sent it must travel; where
+  // none is, the wallet must not invent one.
+  var issuerState = offer.grants.authorization_code.issuer_state || "";
   assert.ok(shown.grant.indexOf("authorization_code") === 0 &&
-            shown.grant.indexOf(issuerState) !== -1,
-    "the pane should show the grant and its issuer_state. Got: " + shown.grant);
+            (!issuerState || shown.grant.indexOf(issuerState) !== -1),
+    "the pane should show the grant (and its issuer_state, if any). Got: " +
+        shown.grant);
   assert.ok(shown.source.indexOf("by value") !== -1,
     "the pane should say how the offer arrived. Got: " + shown.source);
   assert.ok(shown.badge.indexOf("H.1") !== -1,
@@ -3838,10 +3864,18 @@ async function credentialOfferSameDevice(driver) {
 
   var authzUrl = await startAuthorizationRequest(driver,
     "the workflow should reach the authorization server's login screen.");
-  assert.ok(authzUrl.indexOf("issuer_state=" + issuerState) !== -1,
-    "the authorization request MUST carry the offer's issuer_state (OID4VCI " +
-        "section 4.1.1). Got: " + authzUrl);
-  if (mockIsTheAs) {
+  if (issuerState) {
+    assert.ok(authzUrl.indexOf("issuer_state=" + issuerState) !== -1,
+      "the authorization request MUST carry the offer's issuer_state " +
+          "(OID4VCI section 4.1.1). Got: " + authzUrl);
+  } else {
+    assert.ok(authzUrl.indexOf("issuer_state=") === -1,
+      "the offer carried no issuer_state, so the authorization request " +
+          "must not carry one either. Got: " + authzUrl);
+    log.info("[H.1] OK — the offer carried no issuer_state (OID4VCI " +
+             "section 4.1.1 makes it optional) and the wallet invented none.");
+  }
+  if (mockIsTheAs && issuerState) {
     var loginText =
         await driver.executeScript("return document.body.innerText;");
     assert.ok(loginText.indexOf(issuerState) !== -1,
@@ -3852,7 +3886,7 @@ async function credentialOfferSameDevice(driver) {
     log.info("[H.1] OK — issuer_state travelled into the authorization " +
              "request, and the issuer " +
              "recognised it as its own.");
-  } else {
+  } else if (issuerState) {
     log.info("[H.1] OK — issuer_state travelled into the authorization " +
              "request (the authorization " +
              "server here is " + applied.authorization.split("/protocol")[0] +
@@ -3869,8 +3903,31 @@ async function credentialOfferSameDevice(driver) {
   // on the application's entry, draws no screen at all. What asserts the screen
   // itself is the mock repository's own tests/vendored/sts_consent.js.
   await consentScreen.passInBrowser(driver, By);
-  await driver.wait(until.urlContains("vc-issuance-2.html"), fetchWait,
-    "after signing in the workflow should come back to step 2.");
+  try {
+    await driver.wait(until.urlContains("vc-issuance-2.html"), fetchWait);
+  } catch (e) {
+    // Say WHERE the browser stopped: an authorization server's refusal and
+    // a sign-in step nobody answered look identical from here otherwise.
+    var stuckAt = await driver.getCurrentUrl();
+    var stuck = await driver.executeScript(
+      "var err = document.getElementById('display_token_error_class');" +
+      "var ls = window.localStorage;" +
+      "return { text: document.body ? document.body.innerText : ''," +
+      "  error: err ? err.innerText : ''," +
+      "  clientId: ls.getItem('client_id')," +
+      "  redirectUri: ls.getItem('redirect_uri')," +
+      "  tokenEndpoint: ls.getItem('token_endpoint') };");
+    throw new Error("after signing in the workflow should come back to " +
+      "step 2, and the browser stopped at " + stuckAt + ". The token " +
+      "endpoint's error: " +
+      String(stuck.error || "(none shown)").replace(/\s+/g, " ")
+        .slice(0, 900) +
+      " — client_id " + stuck.clientId + ", redirect_uri " +
+      stuck.redirectUri + ", token_endpoint " + stuck.tokenEndpoint +
+      ". The page: " +
+      String(stuck.text).replace(/\s+/g, " ").slice(0, 300) +
+      " (" + e.message + ")");
+  }
   await driver.wait(async function () {
     return !!(await value(driver, "vc_proof_jwt"));
   }, fetchWait, "step 2 should prepare the credential request.");
@@ -3906,24 +3963,16 @@ async function credentialOfferSameDevice(driver) {
   log.info("[H.1] OK — the offered credential was issued to " + payload.sub +
            " and verifies.");
 
-  // ---- the offer can also travel by reference -----------------------------
-  await driver.get(issuerBase + "/issuer");
-  await click(driver, By.linkText("Request it (offer by reference)"));
+  // ---- an offer in hand again, to be discarded ----------------------------
+  // (An offer passed BY REFERENCE, credential_offer_uri, is H.2's: the
+  // portal's QR code carries one.)
+  await driver.get(offerPage);
+  await driver.wait(until.elementLocated(By.id("wallet-link")), fetchWait);
+  await click(driver, By.id("wallet-link"));
   await driver.wait(until.elementLocated(By.id("pane_offer")), fetchWait);
   await driver.wait(async function () {
     return (await text(driver, "offer_issuer")) === issuerBase;
-  }, fetchWait, "an offer passed by reference should be fetched and shown.");
-  var byRef = await driver.executeScript(
-    "return { url: location.href, source: " +
-        "document.getElementById('offer_source').textContent.trim() };");
-  assert.ok(byRef.url.indexOf("credential_offer_uri=") !== -1,
-    "the by-reference link should pass credential_offer_uri. Got: " +
-        byRef.url.slice(0, 90));
-  assert.ok(byRef.source.indexOf("by reference") !== -1,
-    "the pane should say the offer was fetched by reference. Got: " +
-        byRef.source);
-  log.info("[H.1] OK — an offer passed by reference (credential_offer_uri) " +
-           "is fetched and shown too.");
+  }, fetchWait, "the offer should be shown again.");
 
   // ---- discarding it returns to the wallet-initiated use case -------------
   await click(driver, By.id("offer_discard_button"));
@@ -3964,34 +4013,47 @@ async function credentialOfferSameDevice(driver) {
 // so this section checks that the wallet refuses to send without it, that the
 // issuer refuses a wrong one, and that the code is single use.
 // ---------------------------------------------------------------------------
-// WHO A CROSS-DEVICE OFFER IS FOR, AND THE SUBJECT THAT PERSON HAS. H.2's
-// End-User was identified out of band, so the mock makes the offer to the
-// person `oid4vci.offerUsername` names. Until iya-sts 64580f4 (2026-09-14) the
-// subject was `urn:sts-mock:user:<name>` and a prefix check was enough; it is
-// `urn:uuid:<entryUUID>` now, the person's directory entry, so the only way to
-// know which one to expect is to ask — the setting for the name, then the
-// person's drill-down for the subject. Both through the management API, which
-// `tools/attach-admin-token.js` supplies the credential for.
+// WHO A PRE-AUTHORIZED OFFER IS FOR: the person who made it, on their own
+// account page. Until iya-sts #594 the demonstration issuer made it for
+// whoever `oid4vci.offerUsername` named; now it is the person signed in at
+// `/portal/wallet`, so the subject to expect is that person's directory
+// entry, `urn:uuid:<entryUUID>`, read through the management API.
+var OFFER_USER = process.env.VC_OFFER_USER || usernameFor("vc-offer");
+
 async function offeredEndUser() {
   log.debug("Entering offeredEndUser().");
-  var config = await httpJson(issuerBase + "/admin-api/config",
-      { headers: { Accept: "application/json" } });
-  var username = "";
-  ((config.body || {}).groups || []).forEach(function (group) {
-    (group.settings || []).forEach(function (setting) {
-      if (setting.key === "oid4vci.offerUsername") {
-        username = String(setting.value || "");
-      }
-    });
-  });
-  assert.ok(username,
-    "the issuer's configuration names nobody as oid4vci.offerUsername, so " +
-        "there is no End-User a cross-device offer could be for. GET " +
-        "/admin-api/config answered " + config.status + ": " +
-        config.raw.slice(0, 200));
-  var subject = await directorySubjectOf(username);
-  log.debug("Leaving offeredEndUser(). " + username + " is " + subject);
-  return { username: username, subject: subject };
+  var subject = await directorySubjectOf(OFFER_USER);
+  log.debug("Leaving offeredEndUser(). " + OFFER_USER + " is " + subject);
+  return { username: OFFER_USER, subject: subject };
+}
+
+// THE START OF H.2 AND H.3, AS A PERSON MAKES IT. Step 0's card has just been
+// pressed: the browser is on the issuer's website, which links the person to
+// their own wallet page at iya-sts; that page makes the offer. Answers what
+// `offerFromThePortalWallet()` read off the page.
+async function offerThroughTheIssuerWebsite(driver, mode, label) {
+  log.debug("Entering offerThroughTheIssuerWebsite(). " + mode);
+  await driver.wait(until.urlContains("/issuer"), fetchWait,
+    "choosing a pre-authorized use case should take the End-User to the " +
+        "issuer's website, not the wallet.");
+  var portalLinks = await driver.executeScript(
+    "return Array.prototype.slice.call(document.querySelectorAll('a'))" +
+    "  .map(function (a) { return a.href; })" +
+    "  .filter(function (h) { return /\\/portal\\/wallet$/.test(h); });");
+  assert.ok(portalLinks.length > 0,
+    "the issuer's website should send a person who wants a pre-authorized " +
+        "offer to their own wallet page (/portal/wallet).");
+  log.info("[" + label + "] OK — the issuer's website at " +
+           (await driver.getCurrentUrl()) + " sends the person to " +
+           portalLinks[0] + ".");
+  var screen = await common.offerFromThePortalWallet(driver, {
+    By: By, until: until, stsBase: portalLinks[0].replace(/\/portal\/wallet$/,
+                                                          ""),
+    username: OFFER_USER, mode: mode,
+    configuration: "IdentityCredential", wait: fetchWait,
+    consentScreen: consentScreen });
+  log.debug("Leaving offerThroughTheIssuerWebsite().");
+  return screen;
 }
 
 // The subject the issuer's directory gives a person, from that person's
@@ -4025,43 +4087,38 @@ async function crossDeviceOffer(driver) {
     "window.localStorage.clear();" +
     "window.localStorage.setItem('vci_credential_issuer', arguments[0]);" +
     "window.localStorage.setItem('vci_metadata_endpoint', arguments[0] + " +
-    "  '/.well-known/openid-credential-issuer');", issuerBase);
+    "  '/.well-known/openid-credential-issuer');" +
+    "window.localStorage.setItem('sdjwtvc_issuer_site_url', arguments[1]);",
+    issuerBase, issuerSiteUrl);
   await driver.navigate().refresh();
   await pageBundleReady(driver);
   await driver.wait(until.elementLocated(By.id(
                     "vc_usecase_offer-cross-device")), waitTime);
   await click(driver, By.id("vc_usecase_offer-cross-device"));
 
-  // ---- the issuer's screen -------------------------------------------------
-  await driver.wait(until.elementLocated(By.id("tx_code")), fetchWait,
-    "the cross-device use case should show the issuer's QR screen, not send " +
-        "the browser to the wallet.");
-  var screen = await driver.executeScript(
-    "var qr = document.getElementById('offer_qr');" +
-    "return { url: location.href," +
-    "         txCode: document.getElementById('tx_code').textContent.trim()," +
-    "         offerUri: " +
-        "document.getElementById('offer_uri').textContent.trim()," +
-    "         qr: qr ? qr.src.slice(0, 21) : ''," +
-    "         page: document.body.textContent };");
-  assert.ok(screen.url.indexOf(issuerBase) === 0,
-    "the QR screen belongs to the issuer, not the wallet. Got: " + screen.url);
-  assert.strictEqual(screen.qr, "data:image/png;base64",
-    "a cross-device offer is handed over as a QR code, so there should be " +
-        "one on the issuer's screen.");
-  assert.ok(/^\d{5}$/.test(screen.txCode),
-    "the issuer should display a Transaction Code on its own screen. Got: " +
+  // ---- the issuer's website, and the person's own wallet page ---------------
+  // A pre-authorized code is a credential about the person it names, so the
+  // issuer's website cannot make one; it sends the person to their own
+  // account page at iya-sts (`/portal/wallet`, iya-sts #589), which makes it
+  // for whoever signs in there.
+  var screen = await offerThroughTheIssuerWebsite(driver, "cross-device",
+                                                  "H.2");
+  assert.ok(screen.qr === "svg",
+    "a cross-device offer is handed over as a QR code, so the portal should " +
+        "draw one beside the offer (#offer_qr).");
+  assert.ok(/^\d{4,8}$/.test(screen.txCode),
+    "the portal should display a Transaction Code on its own screen. Got: " +
         screen.txCode);
-  assert.ok(screen.offerUri.indexOf("openid-credential-offer://") === 0,
-    "the QR code should carry the openid-credential-offer URI OID4VCI " +
-        "registers. Got: " +
+  assert.ok(screen.offerUri.indexOf("openid-credential-offer://") === 0 ||
+            screen.offerUri.indexOf("haip-vci://") === 0,
+    "the QR code should carry an offer URI under a wallet's scheme. Got: " +
     screen.offerUri.slice(0, 60));
   assert.ok(screen.page.indexOf(screen.txCode) !== -1 &&
             screen.offerUri.indexOf(screen.txCode) === -1,
     "the Transaction Code must be shown on the screen and NOT travel in the " +
         "offer — that separation is " +
     "the whole point of it.");
-  log.info("[H.2] OK — the issuer shows a QR code and a Transaction Code " +
+  log.info("[H.2] OK — the portal shows a QR code and a Transaction Code " +
            "that is not in the offer.");
 
   // ---- the wallet takes the scanned offer ---------------------------------
@@ -4088,6 +4145,8 @@ async function crossDeviceOffer(driver) {
         "document.getElementById('pane_offer').style.display !== 'none'," +
     "         grant: " +
         "document.getElementById('offer_grant').textContent.trim()," +
+    "         source: " +
+        "document.getElementById('offer_source').textContent.trim()," +
     "         metadataUrl: " +
         "document.getElementById('vci_metadata_endpoint').value," +
     "         credentialEndpoint: " +
@@ -4095,6 +4154,14 @@ async function crossDeviceOffer(driver) {
     "         badge: (document.getElementById('vc_use_case_badge') || " +
         "{}).textContent || '' };");
   assert.ok(taken.offerShown, "the offer pane should show what was scanned.");
+  if (screen.offerUri.indexOf("credential_offer_uri=") !== -1) {
+    assert.ok(taken.source.indexOf("by reference") !== -1,
+      "the portal's QR code carries the offer BY REFERENCE " +
+          "(credential_offer_uri), so the pane should say it was fetched by " +
+          "reference. Got: " + taken.source);
+    log.info("[H.2] OK — the scanned offer was passed by reference and " +
+             "fetched.");
+  }
   assert.ok(taken.grant.indexOf("pre-authorized_code") !== -1,
     "the offer should be shown as using the pre-authorized code grant. Got: " +
         taken.grant);
@@ -4140,7 +4207,7 @@ async function crossDeviceOffer(driver) {
       "the Token Request pane should be shown for a pre-authorized offer.");
   assert.ok(pane.code && pane.code.length > 10,
             "the pre-authorized code should be shown. Got: " + pane.code);
-  assert.ok(/5 digits/.test(pane.hint),
+  assert.ok(new RegExp(screen.txCode.length + " digits").test(pane.hint),
     "the pane should say what Transaction Code the issuer wants. Got: " +
         pane.hint);
   assert.ok(pane.request.indexOf("grant_type=" +
@@ -4213,7 +4280,7 @@ async function crossDeviceOffer(driver) {
   assert.strictEqual(replay.status, 400,
     "a pre-authorized code is single use; replaying it should be refused. " +
         "Got HTTP " + replay.status);
-  assert.ok(/already-used|Unknown/i.test(replay.raw),
+  assert.ok(/already|used|Unknown|invalid_grant/i.test(replay.raw),
     "the refusal should say the code has been used. Got: " + replay.raw.slice(0,
         160));
   log.info("[H.2] OK — the pre-authorized code cannot be redeemed twice.");
@@ -4254,19 +4321,18 @@ async function deferredIssuance(driver) {
     "window.localStorage.clear();" +
     "window.localStorage.setItem('vci_credential_issuer', arguments[0]);" +
     "window.localStorage.setItem('vci_metadata_endpoint', arguments[0] + " +
-    "  '/.well-known/openid-credential-issuer');", issuerBase);
+    "  '/.well-known/openid-credential-issuer');" +
+    "window.localStorage.setItem('sdjwtvc_issuer_site_url', arguments[1]);",
+    issuerBase, issuerSiteUrl);
   await driver.navigate().refresh();
   await pageBundleReady(driver);
   await driver.wait(until.elementLocated(By.id("vc_usecase_offer-deferred")),
                     waitTime);
   await click(driver, By.id("vc_usecase_offer-deferred"));
 
-  await driver.wait(until.elementLocated(By.id("tx_code")), fetchWait,
-    "the deferred use case also starts at the issuer's QR screen.");
-  var screen = await driver.executeScript(
-    "return { txCode: document.getElementById('tx_code').textContent.trim()," +
-    "         offerUri: " +
-        "document.getElementById('offer_uri').textContent.trim() };");
+  // The deferred use case starts where H.2 does: the issuer's website, then
+  // the person's own wallet page, asked for a DEFERRED offer this time.
+  var screen = await offerThroughTheIssuerWebsite(driver, "deferred", "H.3");
 
   await loadUrl(driver, baseUrl + "/vc-issuance-1.html");
   await pageBundleReady(driver);
@@ -5094,20 +5160,35 @@ async function claimsCannotTravelOnAScope(driver) {
   log.debug("Leaving claimsCannotTravelOnAScope().");
 }
 
-// The issuer's cross-device offer screen, read the way a second device would:
-// the offer itself and the Transaction Code the issuer displays, which is
-// deliberately not in the offer.
-async function fetchCrossDeviceOffer() {
+// A cross-device offer, read the way a second device would: the offer itself
+// and the Transaction Code shown beside it, which is deliberately not in the
+// offer. Made by the person on their own wallet page at iya-sts (the
+// demonstration issuer page that made one for anybody went with iya-sts
+// #594), and fetched from its credential_offer_uri when it is passed by
+// reference, as the portal's QR code passes it.
+async function fetchCrossDeviceOffer(driver) {
   log.debug("Entering fetchCrossDeviceOffer().");
-  var page = await (await fetch(issuerBase +
-      "/issuer/offer?mode=cross-device")).text();
-  var offer = JSON.parse(decodeURIComponent(
-      /credential_offer=([^"<\s]*)/.exec(page)[1]));
-  var uri = /id="offer_uri"[^>]*>([^<]*)</.exec(page)[1].trim();
-  var txCode = /id="tx_code"[^>]*>([^<]*)</.exec(page)[1].trim();
-  log.debug("Leaving fetchCrossDeviceOffer(). tx_code=" + txCode);
-  return { offer: offer, uri: uri, txCode: txCode,
-           code: offer.grants[PRE_AUTHORIZED_GRANT]["pre-authorized_code"] };
+  var screen = await common.offerFromThePortalWallet(driver, {
+    By: By, until: until, stsBase: issuerBase, username: OFFER_USER,
+    mode: "cross-device", configuration: VCI_CONFIG_ID, wait: fetchWait,
+    consentScreen: consentScreen });
+  var query = new URL(screen.offerUri.replace(/^[a-z-]+:\/\//,
+                                              "https://wallet.invalid/"))
+      .searchParams;
+  var offer;
+  if (query.get("credential_offer_uri")) {
+    var fetched = await httpJson(query.get("credential_offer_uri"));
+    assert.strictEqual(fetched.status, 200,
+      "the offer's credential_offer_uri should answer the offer. Got " +
+          fetched.status + ": " + fetched.raw.slice(0, 160));
+    offer = fetched.body;
+  } else {
+    offer = JSON.parse(query.get("credential_offer"));
+  }
+  log.debug("Leaving fetchCrossDeviceOffer(). tx_code=" + screen.txCode);
+  return { offer: offer, uri: screen.offerUri, txCode: screen.txCode,
+           code: ((offer.grants || {})[PRE_AUTHORIZED_GRANT] ||
+                  {})["pre-authorized_code"] };
 }
 
 // ---------------------------------------------------------------------------
@@ -5123,7 +5204,7 @@ async function fetchCrossDeviceOffer() {
 async function preAuthorizedClaimsThroughThePages(driver) {
   log.debug("Entering preAuthorizedClaimsThroughThePages().");
   log.info("=== claims on a pre-authorized offer, through the pages ===");
-  var offered = await fetchCrossDeviceOffer();
+  var offered = await fetchCrossDeviceOffer(driver);
 
   await stepOneConfigured(driver, "scope");
   await loadUrl(driver, baseUrl + "/vc-issuance-1.html");
@@ -5259,7 +5340,7 @@ function claimsOfConfiguration(config) {
   return claims || [];
 }
 
-async function preAuthorizedClaimsRequest() {
+async function preAuthorizedClaimsRequest(driver) {
   log.debug("Entering preAuthorizedClaimsRequest().");
   log.info("=== claims on the pre-authorized code flow ===");
   var meta = (await httpJson(issuerMetadataUrl)).body;
@@ -5271,7 +5352,7 @@ async function preAuthorizedClaimsRequest() {
     "advertises " + top.length + ".");
   var wanted = top[0].path;
 
-  var offered = await fetchCrossDeviceOffer();
+  var offered = await fetchCrossDeviceOffer(driver);
   assert.ok(offered.code,
     "the cross-device offer should carry a pre-authorized code. Got: " +
         JSON.stringify(offered.offer));
@@ -5343,7 +5424,7 @@ async function preAuthorizedClaimsRequest() {
   // The refusals. Same parser as the authorization endpoint's, which is why
   // they are checked here where no browser session is needed.
   var refuse = async function (claims, expected, why) {
-    var another = await fetchCrossDeviceOffer();
+    var another = await fetchCrossDeviceOffer(driver);
     var refused = await httpJson(issuerBase + "/oauth2/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -5475,8 +5556,11 @@ async function notificationFlow(driver) {
   assert.ok(/204/.test(verdict),
     "section 11.2: success is 204 with no body. Got: " + verdict);
 
-  var recorded = await httpJson(issuerBase + "/oid4vci/notification/" +
-      record.notificationId);
+  // The issuer's record of it is a management API read since iya-sts #594
+  // (`GET /oid4vci/notification/:id` was a demonstration readback).
+  var recorded = await httpJson(issuerBase +
+      "/admin-api/oid4vci/notifications?id=" +
+      encodeURIComponent(record.notificationId));
   assert.strictEqual(recorded.status, 200,
       "the issuer should know about the notification it accepted.");
   assert.strictEqual(recorded.body.event, "credential_accepted",
@@ -5635,8 +5719,10 @@ async function encryptedCredentialRequest(driver) {
     "the issuer should decrypt the request and issue, reaching step 3.");
   await assertStepThreeIsHappy(driver, "encrypted request");
 
-  var arrived = (await httpJson(issuerBase + "/oid4vci/last_request")).body ||
-      {};
+  // A management API read since iya-sts #594 (`/oid4vci/last_request` was a
+  // demonstration readback).
+  var arrived = (await httpJson(issuerBase +
+      "/admin-api/oid4vci/last-request")).body || {};
   assert.strictEqual(arrived.seen, true,
     "the issuer should have recorded the request it just served. Got: " +
         JSON.stringify(arrived));
@@ -6112,8 +6198,14 @@ async function test() {
     protocols: ["oauth2", "oid4vci"],
     fields: {
       oauthClientId: clientId,
+      // authorization_code and the callback as well, since H.1's same-device
+      // offer (iya-sts #594) names this issuer's OWN authorization server,
+      // and iya-sts holds a client to the grants it declares (#289): a code
+      // it issued was refused at the token endpoint while this said only
+      // pre-authorized_code and refresh_token.
       oauthGrantType: ["urn:ietf:params:oauth:grant-type:pre-authorized_code",
-                       "refresh_token"],
+                       "authorization_code", "refresh_token"],
+      oauthRedirectUri: [baseUrl.replace(/\/+$/, "") + "/callback"],
       oauthScope: ["openid", "profile", "email"],
       oauthTokenEndpointAuthMethod: "none",
       oauthConfidential: "FALSE"
@@ -6193,7 +6285,7 @@ async function test() {
     await claimsSelection(driver);
     await claimsCannotTravelOnAScope(driver);
     await preAuthorizedClaimsThroughThePages(driver);
-    await preAuthorizedClaimsRequest();
+    await preAuthorizedClaimsRequest(driver);
     await batchAndEncryptedIssuance(driver);
     // The other direction of section 10. After the batch section because both
     // start from stepOneConfigured(), and this one leaves step 3 showing a

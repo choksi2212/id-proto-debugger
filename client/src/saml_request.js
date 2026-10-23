@@ -553,6 +553,13 @@ function parseMetadata(xmlText) {
   setVal('saml_slo_post', sloPost);
   setVal('saml_slo_redirect', sloRedirect);
   setVal('saml_slo_artifact', sloArtifact);
+  // A document describing BOTH versions lists its SingleLogoutServices for
+  // SAML 2.0 alone, and SAML 1.1 has no Single Logout — so the 1.1 set carries
+  // none and selecting 1.1 clears the three fields rather than leaving 2.0's
+  // addresses in a section that version does not have.
+  endpoints['2.0'].slo = { post: sloPost, redirect: sloRedirect,
+                           artifact: sloArtifact };
+  endpoints['1.1'].slo = { post: '', redirect: '', artifact: '' };
 
   // Artifact Resolution Service (SOAP back-channel). SAML 1.1 publishes the
   // same address twice — once here and once as the AttributeService of an
@@ -828,6 +835,13 @@ function applyMetadataEndpoints() {
   setVal('saml_sso_redirect', set.redirect || '');
   setVal('saml_sso_artifact', set.artifact || '');
   setVal('saml_ars', set.ars || '');
+  // A set stored by a build from before the SLO addresses were kept per
+  // version has no `slo`, and leaves the three fields as they are.
+  if (set.slo) {
+    setVal('saml_slo_post', set.slo.post || '');
+    setVal('saml_slo_redirect', set.slo.redirect || '');
+    setVal('saml_slo_artifact', set.slo.artifact || '');
+  }
   log.debug("Leaving applyMetadataEndpoints().");
 }
 

@@ -178,6 +178,13 @@ button.vc-usecase-soon .vc-usecase-spec { color: #666; background: #eee; }
 .vc-fit .dbg-legend { font-size: 1em; padding: 2px 0; margin-bottom: 2px;
   line-height: 1.4; }
 .vc-fit .dbg-pane p.vc-note { margin: 3px 0 5px; }
+/* Step 0's "Issuer website URL" sits at the foot of the intro paragraph, on
+   one line: bootstrap makes a label a block and gives a text input a 10px
+   bottom margin, and on this page height is the scarce thing
+   (chooserFitsOnOneScreen()). */
+.vc-fit .vc-intro label[for="vc_issuer_site_url"] { display: inline; }
+.vc-fit .vc-intro #vc_issuer_site_url,
+.vc-fit .vc-intro #vc_issuer_site_save { margin-bottom: 0; }
 /* This pane GROWS: it gained a second tool (the PKI page) on 2026-08-17, which put
    the chooser 32px below the fold and failed chooserFitsOnOneScreen(). Each tool is
    a row of a label and a two-line description, and at the inherited 20px line height

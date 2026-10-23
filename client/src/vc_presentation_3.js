@@ -405,127 +405,38 @@ function renderRecheck(checks) {
 }
 
 // --- what the verifier said -------------------------------------------------
-// Its result endpoint is not part of OID4VP: a real verifier shows the End-User
-// its own page. This is the same information, machine-readable, so the workflow
-// can show which of the verifier's checks passed rather than only "refused".
-//
-// Which is why only THIS debugger's own mock verifier is asked. The endpoint is
-// its invention, at /oid4vp/result/<state> beside its Response URI; any other
-// verifier records the outcome in its own back office, which a wallet has no
-// route to and no business reading. walt.id's, for one, keeps it at a
-// management API — so deriving the URL from whatever Response URI arrived and
-// asking anyway just 404s, and reads on the page as a failure when the
-// presentation in fact succeeded.
-var MOCK_RESPONSE_URI = /\/oid4vp\/response$/;
-
-function resultUrl() {
-  log.debug("Entering resultUrl().");
-  if (!sent || !sent.responseUri || !sent.state) {
-    log.debug("Leaving resultUrl().");
-    return "";
-  }
-  if (!MOCK_RESPONSE_URI.test(String(sent.responseUri))) {
-    log.debug("Leaving resultUrl().");
-    return "";
-  }
-  log.debug("Leaving resultUrl().");
-  return String(sent.responseUri).replace(/\/response$/, "/result/") +
-                encodeURIComponent(sent.state);
-}
-
-function renderVerdict(verdict) {
-  log.debug("Entering renderVerdict().");
-  if (!verdict) {
-    setHtml("vp_verifier_table",
-      "<tbody><tr><td>The verifier has not recorded a verdict for this " +
-          "presentation.</td></tr></tbody>");
-    log.debug("Leaving renderVerdict().");
+// OpenID4VP 1.0 section 8.2: the Response Endpoint answers the wallet's
+// direct_post with 200 and, optionally, a `redirect_uri` the wallet sends the
+// browser to. That answer is ALL a wallet is told. A Verifier's verdict —
+// which of its checks passed — is recorded in its own back office, which a
+// wallet has no route to and no business reading. (This page used to read
+// one from iya-sts's demonstration endpoint /oid4vp/result/<state>, which
+// iya-sts #594 deleted; the wallet's own re-check of exactly the bytes it
+// sent is in the pane above, and that is the half a wallet can own.)
+function showVerifierAnswer() {
+  log.debug("Entering showVerifierAnswer().");
+  if (!sent) {
+    log.debug("Leaving showVerifierAnswer(). Nothing sent.");
     return false;
   }
-  var checks = verdict.checks || [];
-  setHtml("vp_verifier_table",
-    "<thead><tr><th style='width:22%'>The verifier checked</th><th " +
-        "style='width:10%'>Result</th>" +
-    "<th>What it said</th></tr></thead><tbody>" +
-    checks.map(function (c) {
-      return "<tr><td>" + esc(c.name) + '</td><td class="' + (c.ok ?
-          "vc-ok" : "vc-bad") + '">' +
-             (c.ok ? "OK" : "FAILED") + "</td><td>" + esc(c.detail) +
-              "</td></tr>";
-    }).join("") + "</tbody>");
-  setJson("vp_verifier_claims", verdict.claims || null);
-  setText("vp_verifier_disclosed", (verdict.disclosed || []).join(", ") || "—");
-  setText("vp_verifier_requested", (verdict.requested || []).join(", ") || "—");
-  setText("vp_verifier_extra", (verdict.extraDisclosed || []).length
-    ? (verdict.extraDisclosed || []).join(", ") +
-        " — more than it asked for, and it kept them anyway"
-    : "none — the wallet disclosed exactly what was asked for");
-  var failed = checks.filter(function (c) { return !c.ok; });
-  status("vp_verifier_status", verdict.refused
-    ? "The wallet refused this request (" + (verdict.error || "access_denied") +
-        "), so nothing was disclosed."
-    : verdict.ok
-      ? "The verifier ACCEPTED the presentation: all " + checks.length +
-          " of its checks passed."
-      : "The verifier REFUSED the presentation: " +
-        failed.map(function (c) { return c.name; }).join(", ") + " failed.",
-    verdict.ok ? "vc-ok" : "vc-bad");
-  log.debug("Leaving renderVerdict(). ok=" + verdict.ok);
-  return true;
-}
-
-function fetchVerdict() {
-  log.debug("Entering fetchVerdict().");
-  var url = resultUrl();
-  if (!url) {
-    // Two different reasons, and they are worth telling apart: a presentation
-    // with no state cannot be looked up anywhere, while a presentation to
-    // someone else's verifier has a verdict that simply is not the wallet's to
-    // read.
-    var noState = !sent || !sent.state;
-    status("vp_verifier_status", noState
-      ? "This presentation carries no state, so its verdict cannot be looked " +
-          "up. What the verifier answered at " +
-        "the time is below."
-      : "This verifier publishes no per-check verdict a wallet can read — " +
-          "that endpoint is this debugger's own " +
-        "mock verifier's invention, not part of OID4VP. What this one " +
-            "answered when the presentation was sent " +
-        "is below, and the wallet's own re-check of exactly those bytes is " +
-            "beside it.", "vc-pending");
-    setHtml("vp_verifier_table", "<tbody><tr><td>" + (noState
-      ? "No state, so there is nothing to look up."
-      : "Not published to the wallet by this verifier. Its answer to the " +
-          "direct_post is below.") +
-      "</td></tr></tbody>");
-    setJson("vp_verifier_raw", sent && sent.response);
-    log.debug("Leaving fetchVerdict(). No result endpoint to ask. noState=" +
-              noState);
-    return Promise.resolve(false);
+  var answer = sent.response;
+  var redirect = answer && typeof answer === "object" && answer.redirect_uri
+    ? String(answer.redirect_uri) : "";
+  var code = sent.statusCode ? "HTTP " + sent.statusCode : "an answer";
+  var said;
+  if (sent.accepted) {
+    said = "The Verifier answered " + code + ": it accepted the response." +
+      (redirect ? " It sends the browser on to " + redirect + "." :
+       " It named no redirect_uri, so the browser stays here.");
+  } else {
+    var err = (answer && typeof answer === "object" &&
+               (answer.error_description || answer.error)) || code;
+    said = "The Verifier refused the response: " + err + ".";
   }
-  status("vp_verifier_status", "Asking the verifier what it decided …",
-         "vc-pending");
-  log.debug("Leaving fetchVerdict().");
-  return metadataClient.fetchJson(url)
-    .then(function (doc) {
-      sdJwtVc.setJson(sdJwtVp.KEYS.RESULT, doc);
-      setJson("vp_verifier_raw", doc);
-      renderVerdict(doc.verdict);
-      log.debug("Leaving fetchVerdict().");
-      return true;
-    })
-    .catch(function (e) {
-      log.error("the verifier's verdict could not be fetched: " + e.message);
-      status("vp_verifier_status",
-        "The verifier's verdict could not be fetched (" + e.message +
-            "). What it answered when the " +
-        "presentation was sent is below.", "vc-bad");
-      setJson("vp_verifier_raw", sent && sent.response);
-      // A verdict fetched on an earlier visit is better than nothing.
-      var kept = sdJwtVc.getJson(sdJwtVp.KEYS.RESULT);
-      if (kept) renderVerdict(kept.verdict);
-      return false;
-    });
+  status("vp_verifier_status", said, sent.accepted ? "vc-ok" : "vc-bad");
+  setJson("vp_verifier_raw", answer === undefined ? null : answer);
+  log.debug("Leaving showVerifierAnswer(). accepted=" + !!sent.accepted);
+  return !!sent.accepted;
 }
 
 function presentAgain() {
@@ -586,7 +497,7 @@ function onload() {
     return;
   }
   recheckOwnPresentation();
-  fetchVerdict();
+  showVerifierAnswer();
   log.debug("SD-JWT VC presentation step 3 ready.");
   log.debug("Leaving onload().");
 }
@@ -596,7 +507,7 @@ if (typeof window !== "undefined") {
 }
 
 module.exports = {
-  fetchVerdict: fetchVerdict,
+  showVerifierAnswer: showVerifierAnswer,
   recheckOwnPresentation: recheckOwnPresentation,
   presentAgain: presentAgain,
   startOver: startOver,
