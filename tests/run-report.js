@@ -5927,7 +5927,8 @@ function coverageExcludes(jobs) {
   log.debug("Entering coverageExcludes().");
   const names = new Set(jobs.map((job) => job.script));
   ["run-report.js", "module_paths.js", "wait_for.js", "random_username.js",
-    "consent_screen.js", "common.sh"].forEach(function (name) {
+    "consent_screen.js", "doc_screenshots.js", "common.sh"]
+    .forEach(function (name) {
     names.add(name);
   });
   // Every pattern is `**/`-prefixed, and that is not cosmetic: a bare

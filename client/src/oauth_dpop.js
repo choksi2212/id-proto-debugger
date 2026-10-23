@@ -324,6 +324,13 @@ function jktOfToken(accessToken) {
 // Three outcomes rather than two, because "the server ignored DPoP" and "the
 // server bound it to a different key" are different problems, and collapsing
 // them into "not bound" hides the second one entirely.
+//
+// And a fourth, "pending", which is not a verdict at all: asked with no token
+// (the pane redrawing itself) and with nothing recorded by rememberBinding(),
+// no token endpoint has answered since DPoP was switched on. Reading that
+// absence as "the token came back with no cnf.jkt" is what the pane did until
+// 2026-10-21 — a red line saying a proof had been sent and ignored, drawn
+// before any Token Request had been made.
 function bindingVerdict(accessToken) {
   log.debug("Entering bindingVerdict().");
   var asked = enabled();
@@ -335,6 +342,16 @@ function bindingVerdict(accessToken) {
     log.debug("Leaving bindingVerdict(). DPoP was not asked for.");
     return { state: "off",
             text: "DPoP is off — this is an ordinary Bearer token." };
+  }
+  if (accessToken === undefined && get(KEYS.TOKEN_TYPE) === null &&
+      get(KEYS.TOKEN_JKT) === null) {
+    log.debug("Leaving bindingVerdict(). No token requested yet.");
+    return {
+      state: "pending",
+      text: "No token has been requested with this key yet. Whether the " +
+            "authorization server binds the access token to it is shown " +
+            "here once the token endpoint answers."
+    };
   }
   if (!boundTo) {
     log.debug("Leaving bindingVerdict(). Nothing bound.");

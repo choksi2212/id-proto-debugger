@@ -16,9 +16,12 @@ var baseUrl = "https://localhost:3000"
 var headless = true;
 var waitTime = appconfig.waitTime;
 
+// Pictures for docs/oauth2-oidc/, taken only when DOC_SCREENSHOT_DIR is set.
+const docShots = require("./doc_screenshots.js");
+docShots.setPrefix("oauth2-client-credentials");
 const { populateMetadata, getAccessTokenClientCredentials, verifyAccessToken } =
        require("../common/tests.js")({ By, until, Select, waitTime, log, jwt,
-       assert });
+       assert, snap: docShots.snap });
 
 
 

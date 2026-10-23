@@ -32,9 +32,13 @@ function isStaticContentSite(url) {
 var headless = true;
 var waitTime = appconfig.waitTime;
 
+// Pictures for docs/oauth2-oidc/, taken only when DOC_SCREENSHOT_DIR is set.
+const docShots = require("./doc_screenshots.js");
+docShots.setPrefix("oauth2-token-exchange");
+
 const { populateMetadata, getAccessTokenAuthCode } =
        require("../common/tests.js")({ By, until, Select, waitTime, log, jwt,
-       assert });
+       assert, snap: docShots.snap });
 
 // Obtains an access token (the subject token for the exchange) via the OIDC
 // Authorization Code flow using the requesting (confidential) client.
@@ -103,6 +107,9 @@ async function exchangeTokenViaUI(driver, audience_client_id, client_id,
   const exchangeBtn = await driver.findElement(By.id("tokenexchange_btn"));
   await driver.executeScript("arguments[0].scrollIntoView({ block: " +
                              "'center' });", exchangeBtn);
+  await docShots.snap(driver, "07-token-exchange-request",
+                      { ids: ["tokenexchange_expand_button",
+                              "tokenexchange_fieldset"] });
   await exchangeBtn.click();
 
   const resultArea = By.id("tokenexchange_result_textarea");
@@ -117,6 +124,8 @@ async function exchangeTokenViaUI(driver, audience_client_id, client_id,
   }, waitTime, "Token exchange produced no result.");
 
   const resultText = await driver.findElement(resultArea).getAttribute("value");
+  await docShots.snap(driver, "08-token-exchange-response",
+                      { ids: ["tokenexchange_result_fieldset"] });
   log.info("Token exchange result: " + resultText.replace(/\n/g, " | "));
   assert(resultText.indexOf("HTTP Status: 200") !== -1,
     "Token exchange did not return HTTP 200. Result: " + resultText);

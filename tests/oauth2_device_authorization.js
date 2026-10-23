@@ -16,8 +16,12 @@ var baseUrl = "https://localhost:3000"
 var headless = true;
 var waitTime = appconfig.waitTime;
 
+// Pictures for docs/oauth2-oidc/, taken only when DOC_SCREENSHOT_DIR is set.
+const docShots = require("./doc_screenshots.js");
+docShots.setPrefix("oauth2-device-authorization");
+
 const { populateMetadata } = require("../common/tests.js")({ By, until,
-       waitTime, log });
+       waitTime, log, snap: docShots.snap });
 
 // On oauth2_oidc_1.html: select the Device Authorization Grant, enter client_id
 // and scope, and click Authorize. This POSTs to the device authorization
@@ -53,6 +57,8 @@ async function requestDeviceAuthorization(driver, client_id, scope) {
   // still occupies layout over the button ("element click intercepted"). A JS
   // click invokes the handler directly and bypasses that check.
   const authorizeEl = await driver.findElement(authorizeBtn);
+  await docShots.snap(driver, "02-device-authorization-request",
+                      { ids: ["authz_expand_button", "authz_fieldset"] });
   await driver.executeScript(
     "arguments[0].scrollIntoView({ block: 'center' }); arguments[0].click();",
     authorizeEl);
@@ -61,6 +67,8 @@ async function requestDeviceAuthorization(driver, client_id, scope) {
   await driver.wait(until.elementLocated(By.id("device_user_code")), waitTime);
   await driver.wait(until.elementIsVisible(driver.findElement(By.id(
                     "device_user_code"))), waitTime);
+  await docShots.snap(driver, "03-device-authorization-response",
+                      { ids: ["token_expand_button", "token_fieldset"] });
   log.info("Leaving requestDeviceAuthorization().");
   log.debug("Leaving requestDeviceAuthorization().");
 }
@@ -110,12 +118,31 @@ async function approveDeviceAuthorization(driver, verification_uri, user_code,
   var granted = false;
   for (var i = 0; i < 10 && !granted; i++) {
     await driver.sleep(700);
+    // Keycloak's code field has an id; the mock STS's (on /portal/device)
+    // is only named, and sits beside a Sign out button that is ALSO a
+    // submit, so its own Continue button is preferred below.
     var codeInput = await findEls(driver, By.id("device-user-code"));
+    if (codeInput.length === 0) {
+      codeInput = await findEls(driver,
+          By.css("input[type=text][name=user_code]"));
+    }
     var userInput = await findEls(driver, By.id("username"));
     var passwordInput = await findEls(driver, By.id("password"));
     var cancelBtn = await findEls(driver, By.id("kc-cancel"));
     var loginBtn = await findEls(driver, By.id("kc-login"));
+    // The mock STS's verification page: "Is this your device?" with an
+    // Approve and a Deny button, drawn once the person has signed in.
+    var approveBtn = await findEls(driver, By.id("device-approve"));
 
+    if (approveBtn.length > 0) {
+      log.info("Device verification: approving the device.");
+      await docShots.snap(driver, "06-approve-device");
+      var urlBeforeApproval = await driver.getCurrentUrl();
+      await approveBtn[0].click();
+      await waitForConsentToSettle(driver, urlBeforeApproval);
+      granted = true;
+      continue;
+    }
     if (codeInput.length > 0) {
       log.info("Device verification: submitting user code.");
       var existing = await codeInput[0].getAttribute("value");
@@ -123,8 +150,12 @@ async function approveDeviceAuthorization(driver, verification_uri, user_code,
         await codeInput[0].clear();
         await codeInput[0].sendKeys(user_code);
       }
-      var submit = await findEls(driver,
-          By.css("input[type=submit], button[type=submit]"));
+      await docShots.snap(driver, "05-enter-user-code");
+      var submit = await findEls(driver, By.id("device-find"));
+      if (submit.length === 0) {
+        submit = await findEls(driver,
+            By.css("input[type=submit], button[type=submit]"));
+      }
       if (submit.length > 0) {
         await submit[0].click();
       }
@@ -136,6 +167,7 @@ async function approveDeviceAuthorization(driver, verification_uri, user_code,
       await userInput[0].sendKeys(username);
       await passwordInput[0].clear();
       await passwordInput[0].sendKeys(password);
+      await docShots.snap(driver, "04-sign-in");
       if (loginBtn.length > 0) {
         await loginBtn[0].click();
       } else {
@@ -293,6 +325,8 @@ async function test() {
       waitForVisibility(display_token_error_form_textarea1)
     ]);
 
+    await docShots.snap(driver, "07-token-response",
+                        { ids: ["token_endpoint_result"] });
     const access_token =
         await driver.findElement(visibleElement).getAttribute("value");
     log.info("Access token result: " + access_token);

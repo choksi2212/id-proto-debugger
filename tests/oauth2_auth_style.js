@@ -66,6 +66,11 @@ var baseUrl = "https://localhost:3000";
 var headless = true;
 var waitTime = appconfig.waitTime;
 
+// Pictures for docs/oauth2-oidc/, taken only when DOC_SCREENSHOT_DIR is set:
+// this is the job that drives the Refresh Token grant against the mock STS.
+const docShots = require("./doc_screenshots.js");
+docShots.setPrefix("oauth2-refresh-token");
+
 const { populateMetadata, clickStable, valueOf } =
        require("../common/tests.js")({ By, until, Select, waitTime, log,
        assert });
@@ -412,6 +417,8 @@ async function test() {
     await typeInto(driver, "token_scope", scope);
     await typeInto(driver, "token_redirect_uri", baseUrl + "/callback");
     await assertPreview(driver, "token", clientId);
+    await docShots.snap(driver, "01-token-request",
+                        { ids: ["token_expand_button", "token_fieldset"] });
 
     await clickStable(driver, By.className("token_btn"), "Get Token");
     const accessToken = await waitForToken(driver, "token_access_token",
@@ -435,6 +442,7 @@ async function test() {
     // storage, which this flow never wrote; a user types it, as here.
     await typeInto(driver, "refresh_client_secret", CLIENT_SECRET);
     await assertPreview(driver, "refresh", clientId);
+    await docShots.snap(driver, "02-refresh-request", { ids: ["step4"] });
 
     const before = (await valueOf(driver, "refresh_access_token")) || "";
     await clickStable(driver, By.id("refresh_btn"), "the refresh button");
@@ -442,6 +450,8 @@ async function test() {
         "display_refresh_error_form_textarea1", before, "refresh request");
     assert.notStrictEqual(refreshed, accessToken,
       "The refresh pane holds the same access token the code bought.");
+    await docShots.snap(driver, "03-refresh-response",
+                        { ids: ["refresh_endpoint_result"] });
     log.info("[refresh/" + initiate + "] OK — the refresh succeeded under " +
              "client_secret_basic.");
     await assertSentWithBasic(driver, "refresh", clientId);

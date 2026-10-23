@@ -20,12 +20,22 @@
 //     require("../common/tests.js")({ By, until, Select, waitTime, log, jwt, assert });
 //   await populateMetadata(driver, discovery_endpoint);
 //
+// `snap` is optional, and is tests/doc_screenshots.js's function of that name:
+// the flows below photograph each screen they pass through for the user
+// documentation under docs/oauth2-oidc/. Injected rather than required for the
+// reason everything else here is, and it defaults to doing nothing, so a
+// caller that does not pass it behaves exactly as before. Even when it is
+// passed it writes nothing unless DOC_SCREENSHOT_DIR is set.
+//
 // Note: baseUrl is NOT injected here. Each test script mutates its own baseUrl
 // at runtime (via the --url CLI option, parsed after this module is required),
 // so the flows that need it take it as a call-time option instead of capturing
 // a stale default at require time.
 //
-module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
+module.exports = ({ By, until, Select, waitTime, log, jwt, assert,
+                    snap = async function () {
+                      return "";
+                    } }) => {
   // Resolve once an element is located and visible, then return the locator.
   async function waitForVisibility(driver, element) {
     log.debug("Entering waitForVisibility().");
@@ -234,6 +244,9 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
                       "\". The discovery document is " + discovery_endpoint +
                           ".");
     }
+    await snap(driver, "01-metadata",
+               { ids: ["oidc_expand_button", "oidc_fieldset"],
+                 maxHeight: 640 });
     log.info("Leaving populateMetadata(). authorization_endpoint=" + seen);
     log.debug("Leaving populateMetadata().");
   }
@@ -291,6 +304,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     } else {
       await driver.findElement(usePKCE_no).click();
     }
+    await snap(driver, "02-configuration",
+               { ids: ["config_expand_button", "config_fieldset"] });
 
     // Expand the authorization section and wait for the client_id field.
     await driver.wait(until.elementLocated(authz_expand_button), waitTime);
@@ -309,6 +324,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     const redirect_uri = By.id("redirect_uri");
     await driver.findElement(redirect_uri).clear();
     await driver.findElement(redirect_uri).sendKeys(baseUrl + "/callback");
+    await snap(driver, "03-authorization-request",
+               { ids: ["authz_expand_button", "authz_fieldset"] });
     await driver.findElement(btn_authorize).click();
 
     // Login to Keycloak
@@ -330,6 +347,7 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     await driver.findElement(keycloak_username).sendKeys(client_id);
     await driver.findElement(keycloak_password).clear();
     await driver.findElement(keycloak_password).sendKeys(client_id);
+    await snap(driver, "04-sign-in");
     await driver.findElement(keycloak_kc_login).click();
 
     // Back on oauth2_oidc_2.html — submit the token-endpoint form.
@@ -347,6 +365,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     await driver.findElement(token_redirect_uri).clear();
     await driver.findElement(token_redirect_uri).sendKeys(baseUrl +
                              "/callback");
+    await snap(driver, "05-token-request",
+               { ids: ["token_expand_button", "token_fieldset"] });
     await driver.findElement(token_btn).click();
 
     // Wait for whichever appears first: the access token field or the error
@@ -356,6 +376,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
       waitForVisibility(driver, display_token_error_form_textarea1),
     ]);
 
+    await snap(driver, "06-token-response",
+               { ids: ["token_endpoint_result"] });
     let access_token = await driver.findElement(visibleAccessTokenElement)
         .getAttribute("value");
     let response_text = access_token.match(/responseText: (.*)/);
@@ -415,6 +437,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     await driver.findElement(token_client_secret).sendKeys(client_secret);
     await driver.findElement(token_scope).clear();
     await driver.findElement(token_scope).sendKeys(scope);
+    await snap(driver, "02-token-request",
+               { ids: ["token_expand_button", "token_fieldset"] });
     await driver.findElement(token_btn).click();
 
     try {
@@ -422,6 +446,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
         waitForVisibility(driver, token_access_token),
         waitForVisibility(driver, display_token_error_form_textarea1),
       ]);
+      await snap(driver, "03-token-response",
+                 { ids: ["token_endpoint_result"] });
       log.info("Returning visibleAccessTokenElement value.");
       log.debug("Leaving getAccessTokenClientCredentials().");
       return await driver.findElement(visibleAccessTokenElement)
@@ -479,6 +505,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     const redirect_uri = By.id("redirect_uri");
     await driver.findElement(redirect_uri).clear();
     await driver.findElement(redirect_uri).sendKeys(baseUrl + "/callback");
+    await snap(driver, "03-authorization-request",
+               { ids: ["authz_expand_button", "authz_fieldset"] });
     await driver.findElement(btn_authorize).click();
 
     // Wait for the Keycloak login form, reporting any authorization error if it
@@ -502,6 +530,7 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     await driver.findElement(keycloak_username).sendKeys(client_id);
     await driver.findElement(keycloak_password).clear();
     await driver.findElement(keycloak_password).sendKeys(client_id);
+    await snap(driver, "04-sign-in");
     await driver.findElement(keycloak_kc_login).click();
 
     // Wait for whichever appears first: the access token field or the error
@@ -510,6 +539,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
       waitForVisibility(driver, authz_access_token),
       waitForVisibility(driver, display_token_error_form_textarea1),
     ]);
+    await snap(driver, "05-authorization-response",
+               { ids: ["authorization_endpoint_result"] });
 
     log.info("Begin returning token.");
     log.debug("Leaving getAccessTokenImplicit().");
@@ -618,6 +649,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
     await driver.executeScript("arguments[0].scrollIntoView({ behavior: " +
                                "'smooth', block: 'center' });",
                                await driver.findElement(token_btn));
+    await snap(driver, "02-token-request",
+               { ids: ["token_expand_button", "token_fieldset"] });
     await driver.findElement(token_btn).click();
 
     const token_access_token = By.id("token_access_token");
@@ -628,6 +661,8 @@ module.exports = ({ By, until, Select, waitTime, log, jwt, assert }) => {
       waitForVisibility(driver, token_access_token),
       waitForVisibility(driver, display_token_error_form_textarea1),
     ]);
+    await snap(driver, "03-token-response",
+               { ids: ["token_endpoint_result"] });
 
     log.info("Begin returning token.");
     log.debug("Leaving getAccessTokenPassword().");

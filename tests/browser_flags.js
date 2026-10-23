@@ -537,7 +537,21 @@ function addDownloadDirFlags(options, extraPrefs) {
     "download.default_directory": downloadDir(),
     "download.prompt_for_download": false,
     "download.directory_upgrade": true,
-    "safebrowsing.enabled": true
+    "safebrowsing.enabled": true,
+    // NO PASSWORD MANAGER, because its "Save password?" bubble takes the
+    // window's activation and every native click and keystroke after it is
+    // DROPPED — chromedriver reports each as done, and the page receives no
+    // event at all. Most sign-ins here submit a username and a password, and
+    // Chrome offers to save them on some runs and not others, so the symptom
+    // is intermittent and lands on whatever the test does NEXT: a consent
+    // screen whose Allow press never arrives, a radio that "did not take",
+    // fields typed into that stay empty. Measured on 2026-10-21 with
+    // oidc_flows.js against the mock STS: 4 runs of 18 lost focus with the
+    // password manager on, 0 of 18 with it off. `document.hasFocus()` is
+    // false on the page that follows, which is the tell.
+    "credentials_enable_service": false,
+    "profile.password_manager_enabled": false,
+    "profile.password_manager_leak_detection": false
   };
   Object.keys(extraPrefs || {}).forEach(function (one) {
     prefs[one] = extraPrefs[one];
