@@ -113,6 +113,12 @@ log.info("Log initialized. logLevel=" + log.level());
 // this file at all.
 var stsUrl = (process.env.STS_URL || "https://localhost:8081")
     .replace(/\/+$/, "");
+// The SPNEGO-protected page is iya-sts's COMPANION since iya-sts #595: a
+// Kerberos service with its own principal (HTTP/<its host>) and keytab, accepted
+// by MIT's own GSS-API. Its `/spnego?format=json` is what makes it provision
+// that keytab, so it is asked first.
+var companionUrl = (process.env.COMPANION_URL || "http://localhost:9700")
+    .replace(/\/+$/, "");
 // THE KDC AS THIS PROCESS DIALS IT, AND ITS OWN VARIABLE RATHER THAN THE ONE
 // EVERY OTHER KERBEROS JOB CARRIES — the same split SPIFFE_TEST_* draws
 // against SPIFFE_*, and for the identical reason.
@@ -915,11 +921,17 @@ function theChallengeIsBare() {
 // ---------------------------------------------------------------------------
 function theProtectedPageAcceptsARealTicket() {
   log.debug("Entering theProtectedPageAcceptsARealTicket().");
-  log.info("=== SPNEGO at /spnego/protected, with MIT's own GSSAPI ===");
+  log.info("=== SPNEGO at the companion's /spnego/protected, with MIT's " +
+      "own GSSAPI ===");
+  const ready = curl([companionUrl + "/spnego?format=json"]);
+  assert.strictEqual(ready.httpStatus, 200,
+    "iya-sts's companion at " + companionUrl + " has no service key yet " +
+    "(/spnego answered " + ready.httpStatus + "): " +
+    String(ready.body || "").slice(0, 300));
   const result = curl(["--negotiate", "-u", ":",
-      stsUrl + "/spnego/protected"]);
+      companionUrl + "/spnego/protected"]);
   assert.strictEqual(result.httpStatus, 200,
-    "`curl --negotiate` could not authenticate to " + stsUrl +
+    "`curl --negotiate` could not authenticate to " + companionUrl +
     "/spnego/protected. This is a REAL GSSAPI client and nothing in this " +
     "project wrote a byte of what it sent, which is what makes this the only " +
     "assertion here that can find an interoperability defect.\n\n" +
@@ -1190,7 +1202,7 @@ async function theClosedDoorSignsNobodyIn() {
     // promises: turning the sign-in off takes the SESSION away and nothing
     // else. A reader told that should be able to rely on it.
     const still = curl(["--negotiate", "-u", ":",
-        stsUrl + "/spnego/protected"]);
+        companionUrl + "/spnego/protected"]);
     assert.strictEqual(still.httpStatus, 200,
       "with the sign-in door closed, /spnego/protected must still perform " +
       "the whole handshake — that is what the refusal page tells the reader, " +

@@ -141,7 +141,7 @@ const CONFIG_FILE = process.env.CONFIG_FILE ||
 const STS_PLACEHOLDER = '__STS_EMBED_STS_URL__';
 const STS_PLACEHOLDER_KEYS = ['wstrustStsUrlDefault', 'oid4vciIssuerUrlDefault',
   'oid4vpVerifierUrlDefault', 'rfc8414MetadataUrlDefault',
-  'krb5SpnegoUrlDefault', 'spiffeServerAddressDefault',
+  'spiffeServerAddressDefault',
   'spiffeBundleUrlDefault', 'scimBaseUrlDefault', 'ssfTransmitterUrlDefault',
   'samlMetadataUrlDefault', 'wsfedMetadataUrlDefault'];
 const BROWSERIFY = path.join(CLIENT_DIR, 'node_modules', '.bin', 'browserify');

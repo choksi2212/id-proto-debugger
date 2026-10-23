@@ -146,7 +146,8 @@ var config = {
   // nobody. Set it only for a service whose SPN does not match its URL host, which
   // is the case that needs saying out loud anyway.
   // ---------------------------------------------------------------------------
-  krb5SpnegoUrlDefault: "https://sts:8081/spnego/protected",
+  // iya-sts's companion (iya-sts #595) holds the SPNEGO-protected page now.
+  krb5SpnegoUrlDefault: "http://companion:9700/spnego/protected",
   krb5SpnegoSpnDefault: "",
 
   // ---------------------------------------------------------------------------

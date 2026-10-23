@@ -82,10 +82,11 @@ var config = {
   krb5KdcPortDefault: "88",
   krb5PrincipalDefault: "alice",
   krb5PasswordDefault: "password!",
-  // SPNEGO's URL is fetched by the api too, but it is an HTTP URL on the mock
-  // STS's main listener, so it takes the placeholder like the rest. The SPN
+  // EMPTY: the SPNEGO-protected page left iya-sts for its development
+  // companion (iya-sts #595), which is not part of the service that embeds
+  // this build, so there is no page of iya-sts's own to pre-fill. The SPN
   // stays empty for the reason client/src/env/local.js gives.
-  krb5SpnegoUrlDefault: STS + "/spnego/protected",
+  krb5SpnegoUrlDefault: "",
   krb5SpnegoSpnDefault: "",
 
   // LDAP: dialed by the api, so localhost.

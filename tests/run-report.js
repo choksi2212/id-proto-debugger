@@ -2757,9 +2757,13 @@ function buildJobs() {
       // name; STS_URL is browser-facing and follows a different rule (see
       // tests/CLAUDE.md on WSFED_STS_METADATA_URL), which is why this is its
       // own variable rather than derived.
+      // iya-sts's companion holds the protected page since iya-sts #595.
       KRB5_SPNEGO_URL: env.KRB5_SPNEGO_URL ||
         (env.KRB5_SPNEGO_HOST ? "http://" + env.KRB5_SPNEGO_HOST +
-          "/spnego/protected" : "https://sts:8081/spnego/protected"),
+          "/spnego/protected" :
+          (env.COMPANION_URL || "http://localhost:9700") +
+          "/spnego/protected"),
+      COMPANION_URL: env.COMPANION_URL || "http://localhost:9700",
     },
   };
   if (kerberosPagesSkip) spnegoPageJob.skip = kerberosPagesSkip;

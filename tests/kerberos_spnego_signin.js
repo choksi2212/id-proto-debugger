@@ -323,31 +323,14 @@ async function preconditions() {
         "it knows." };
     }
 
-    const advertResponse = await fetch(stsUrl + "/spnego?format=json");
-    if (!advertResponse.ok) {
-      log.debug("Leaving preconditions(). No SPNEGO page.");
-      return { ok: false, why: "the mock STS has no SPNEGO surface (" +
-        stsUrl + "/spnego answered " + advertResponse.status + ") — the sts/ " +
-        "gitlink probably predates it" };
-    }
-    const advert = await advertResponse.json();
-    // THE DOOR IS DISCOVERED, NEVER SPELLED HERE. `signInResource` arrived with
-    // the sign-in on 2026-08-26; a build without it is one where this whole
-    // file has nothing to drive, and saying so names a submodule rather than a
-    // 404.
-    if (!advert.signInResource) {
-      log.debug("Leaving preconditions(). No sign-in door.");
-      return { ok: false, why: "the mock STS publishes no `signInResource` " +
-        "at " + stsUrl + "/spnego?format=json, so it has no SPNEGO SIGN-IN — " +
-        "this is a build from before 2026-08-26, when Kerberos became an " +
-        "authentication mechanism there rather than only a protected page. " +
-        "Bump the sts/ gitlink. `/spnego/protected` on this build still " +
-        "performs the whole handshake, which is what kerberos_spnego_page.js " +
-        "drives." };
-    }
-    signInUrl = stsUrl + advert.signInResource;
-    advertisedSpn = advert.servicePrincipalName
-        ? String(advert.servicePrincipalName).split("@")[0] : null;
+    // THE DOOR IS `/authn/spnego`. It was discovered off `/spnego?format=json`
+    // (`signInResource`), the demonstration page iya-sts #595 moved to its
+    // companion; the door itself stayed and its path is fixed by iya-sts's
+    // own sign-in surface. The acceptor's canonical SPN is the principals
+    // view's `serviceAccount` (the old page's `servicePrincipalName`).
+    signInUrl = stsUrl + "/authn/spnego";
+    advertisedSpn = table.serviceAccount && table.serviceAccount.spn
+        ? String(table.serviceAccount.spn).split("@")[0] : null;
 
     const limitsResponse = await fetch(apiUrl + "/krb5/limits");
     if (!limitsResponse.ok) {

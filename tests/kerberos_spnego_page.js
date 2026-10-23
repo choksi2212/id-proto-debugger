@@ -101,6 +101,16 @@ var servicePassword = process.env.KRB5_SERVICE_PASSWORD ||
 // by different names, and this URL is handed to the api rather than fetched
 // here — so it is the api's view that matters.
 var protectedUrl = process.env.KRB5_SPNEGO_URL || null;
+// THE PROTECTED PAGE IS iya-sts's COMPANION since iya-sts #595: a Kerberos
+// service with its own principal (HTTP/<its host>) and keytab, accepted by MIT
+// Kerberos's GSS-API. It takes no knobs and its key is its own, so the two
+// sections that need iya-sts's own acceptor — the reject, and opening the
+// ticket with a service key — use iya-sts's SPNEGO sign-in door instead,
+// `/authn/spnego`, whose acceptor is still iya-sts's and whose key comes from
+// settings an administrator can read.
+var companionUrl = process.env.COMPANION_URL || "http://localhost:9700";
+var doorUrl = null;
+var doorSpn = null;
 
 async function waitForText(driver, id, pattern, timeoutMs, what) {
   // Content, not elements. Every field on these pages is static markup, so
@@ -156,9 +166,16 @@ async function serviceKeyFor(principalName) {
         answer.autoCreated = !!p.autoCreated;
       }
     });
+    const account = body.serviceAccountSettings || {};
     if (answer.autoCreated && body.accountPolicy &&
         body.accountPolicy.autoServicePassword) {
       answer.password = body.accountPolicy.autoServicePassword;
+    } else if (account.principal &&
+        String(account.principal).split("@")[0] === principalName &&
+        account.password) {
+      // The sign-in door's configured acceptor account.
+      answer.password = account.password;
+      answer.salt = answer.salt || account.salt || null;
     }
   } catch (e) {
     log.warn("could not read the principal table: " + e.message);
@@ -199,14 +216,19 @@ async function preconditions() {
       log.debug("Leaving preconditions(). Unusable principal.");
       return { ok: false, why: unusable };
     }
-    const advert = await fetch(stsUrl + "/spnego?format=json");
+    // Asking the companion for `/spnego?format=json` is also what makes it
+    // provision its keytab; a 503 says why it has none yet.
+    const advert = await fetch(companionUrl + "/spnego?format=json");
     if (!advert.ok) {
+      const said = await advert.json().catch(function () {
+        return {};
+      });
       log.debug("Leaving preconditions(). No SPNEGO page.");
       return {
         ok: false,
-        why: "the mock STS has no SPNEGO-protected page (" + stsUrl +
-          "/spnego answered " + advert.status + ") — the sts/ gitlink " +
-          "probably predates it"
+        why: "iya-sts's companion at " + companionUrl + " has no " +
+          "SPNEGO-protected page ready (/spnego answered " + advert.status +
+          ": " + (said.problem || "no reason given") + ")"
       };
     }
     const limits = await fetch(apiUrl + "/krb5/limits");
@@ -230,15 +252,18 @@ async function preconditions() {
           "/krb5/spnego — this build of the api predates the SPNEGO workflow"
       };
     }
+    // NOT advertisedSpn: that is for a service that VOLUNTEERS its SPN in its
+    // answer, which iya-sts's old acceptor did as a courtesy and an MIT
+    // acceptor does not. The companion's own name is checked below instead.
     const advertised = await advert.json();
-    advertisedSpn = advertised.servicePrincipalName
+    const companionSpn = advertised.servicePrincipalName
         ? String(advertised.servicePrincipalName).split("@")[0] : null;
     log.debug("Leaving preconditions(). Ready.");
     return {
       ok: true,
       kdcPort: String(body.kdcPort),
-      spn: advertisedSpn,
-      acceptsAnySpnForHosts: advertised.acceptsAnySpnForHosts || null,
+      spn: companionSpn,
+      acceptsAnySpnForHosts: null,
       principals: body.principals || []
     };
   } catch (e) {
@@ -548,6 +573,60 @@ async function theHandshakeSucceedsAndIsExplained(driver) {
 // ---------------------------------------------------------------------------
 // 6. The ticket: opaque, and then not.
 // ---------------------------------------------------------------------------
+// THE SIGN-IN DOOR, AND A TICKET FOR ITS OWN SPN. The two sections after this
+// need iya-sts's acceptor rather than the companion's: one opens the ticket
+// with the service's key, which only a service whose key is a SETTING can
+// hand over, and one needs an acceptor that answers a refusal with a real
+// `negState = reject` token. So: derive the door's SPN the way the page
+// derives any SPN, buy a ticket for it on the TGS page (the TGT from the AS
+// step is still held), and complete one exchange at the door.
+async function theDoorIssuesAndAcceptsATicketForItsOwnSpn(driver) {
+  log.debug("Entering theDoorIssuesAndAcceptsATicketForItsOwnSpn().");
+  log.info("=== iya-sts's sign-in door, with a ticket for its own SPN ===");
+  await loadUrl(driver, baseUrl + "/spnego.html");
+  await driver.wait(until.elementLocated(By.id("krb_spnego_url")), 20000);
+  await setField(driver, "krb_spnego_url", doorUrl);
+  await driver.findElement(By.id("krb_spnego_url")).sendKeys("\t");
+  doorSpn = await driver.wait(async function () {
+    const v = await driver.findElement(By.id("krb_spnego_spn"))
+        .getAttribute("value");
+    return /^HTTP\//.test(v) ? v : false;
+  }, 10000, "the page never derived an SPN from the door's URL");
+
+  await loadUrl(driver, baseUrl + "/kerberos_tgs.html?return=spnego&spn=" +
+      encodeURIComponent(doorSpn));
+  await driver.wait(until.elementLocated(By.id("krb_tgs_button")), 20000);
+  await setField(driver, "krb_kdc_host", kdcHost);
+  await setField(driver, "krb_kdc_port", kdcPort);
+  await driver.wait(until.elementIsEnabled(
+      driver.findElement(By.id("krb_tgs_button"))), 20000,
+      "the TGS button was never enabled — no TGT was offered");
+  await driver.findElement(By.id("krb_tgs_button")).click();
+  const issued = await waitForText(driver, "krb_tgs_status",
+      /A service ticket for|refused/, 60000,
+      "the TGS page produced no ticket for " + doorSpn);
+  assert.ok(/A service ticket for/.test(issued),
+    "iya-sts's KDC should issue a ticket for the door's SPN " + doorSpn +
+    ": " + issued);
+
+  await loadUrl(driver, baseUrl + "/spnego.html");
+  await driver.wait(until.elementLocated(By.id("krb_spnego_url")), 20000);
+  await setField(driver, "krb_spnego_url", doorUrl);
+  await driver.findElement(By.id("krb_spnego_url")).sendKeys("\t");
+  await setField(driver, "krb_spnego_spn", doorSpn);
+  await driver.findElement(By.id("krb_spnego_spn")).sendKeys("\t");
+  await waitForText(driver, "krb_credentials_pane", /HELD/, 20000,
+      "the SPNEGO page does not see the ticket for " + doorSpn);
+  await driver.findElement(By.id("krb_authenticate_button")).click();
+  const done = await waitForText(driver, "krb_spnego_status",
+      /accept-completed|REJECTED|FAILED/, 90000,
+      "the exchange at the door produced no result");
+  assert.ok(/accept-completed/.test(done),
+    "the door should accept a ticket for its own SPN: " + done);
+  log.info("the door accepted a ticket for " + doorSpn);
+  log.debug("Leaving theDoorIssuesAndAcceptsATicketForItsOwnSpn().");
+}
+
 async function theTicketIsOpaqueUntilTheServiceKeyIsSupplied(driver) {
   log.debug("Entering theTicketIsOpaqueUntilTheServiceKeyIsSupplied().");
   log.info("=== The ticket that was sent ===");
@@ -595,17 +674,17 @@ async function theTicketIsOpaqueUntilTheServiceKeyIsSupplied(driver) {
   // and one created on demand carries the shared auto-service password the
   // endpoint publishes. A salt is never derivable from a principal name, which is
   // why it is read in both cases.
-  const key = await serviceKeyFor(spn);
+  const key = await serviceKeyFor(doorSpn);
   if (!key.salt) {
     // Not a failure: a build that publishes no salt cannot be asked to open
     // anything. Said rather than skipped silently.
-    log.warn("the mock KDC published no salt for " + spn + " (it lists " +
+    log.warn("iya-sts's KDC published no salt for " + doorSpn + " (it lists " +
         key.known.join(", ") + "), so the decryption half of this section did " +
         "not run");
     log.debug("Leaving theTicketIsOpaqueUntilTheServiceKeyIsSupplied().");
     return;
   }
-  log.info("opening the ticket with " + spn + "'s own key — salt " +
+  log.info("opening the ticket with " + doorSpn + "'s own key — salt " +
       JSON.stringify(key.salt) + ", the " +
       (key.autoCreated ? "shared auto-service" : "configured account's") +
       " password");
@@ -648,33 +727,16 @@ async function aNegotiationWithNothingInCommonIsRefused(driver) {
   log.debug("Entering aNegotiationWithNothingInCommonIsRefused().");
   log.info("=== NEGATIVE: no mechanism in common ===");
 
-  // The acceptor's side: ?mech=none makes the mock support nothing at all.
+  // AT THE SIGN-IN DOOR, whose acceptor is iya-sts's: offered only NTLM, it
+  // answers RFC 4178's `negState = reject` token. (The other half of this
+  // used to be iya-sts's `?mech=none`, an acceptor supporting nothing, which
+  // went with `/spnego/protected` (#595); the reject it produced is the same
+  // message, and this half still produces it.)
   await loadUrl(driver, baseUrl + "/spnego.html");
   await driver.wait(until.elementLocated(By.id("krb_spnego_url")), 20000);
-  await setField(driver, "krb_spnego_url", protectedUrl + "?mech=none");
+  await setField(driver, "krb_spnego_url", doorUrl);
   await driver.findElement(By.id("krb_spnego_url")).sendKeys("\t");
-  await setField(driver, "krb_spnego_spn", spn);
-  await driver.findElement(By.id("krb_spnego_spn")).sendKeys("\t");
-  await waitForText(driver, "krb_credentials_pane", /HELD/, 20000,
-      "the service ticket is no longer held");
-  await driver.findElement(By.id("krb_authenticate_button")).click();
-  const refused = await waitForText(driver, "krb_spnego_status",
-      /accept-completed|REJECTED|FAILED/, 90000,
-      "the negotiation produced no result");
-  assert.ok(/REJECTED/.test(refused),
-    "an acceptor with no mechanism in common must reject, and the page must " +
-    "say so: " + refused);
-  assert.ok(/no reason field|nothing anywhere says why/.test(refused),
-    "and it must explain that SPNEGO carries no reason of its own — a " +
-    "rejection with an empty responseToken cannot be told from a wrong " +
-    "password, and that fact is the finding: " + refused);
-
-  // The initiator's side: offer only a mechanism this build cannot perform.
-  await loadUrl(driver, baseUrl + "/spnego.html");
-  await driver.wait(until.elementLocated(By.id("krb_spnego_url")), 20000);
-  await setField(driver, "krb_spnego_url", protectedUrl);
-  await driver.findElement(By.id("krb_spnego_url")).sendKeys("\t");
-  await setField(driver, "krb_spnego_spn", spn);
+  await setField(driver, "krb_spnego_spn", doorSpn);
   await driver.findElement(By.id("krb_spnego_spn")).sendKeys("\t");
   await waitForText(driver, "krb_credentials_pane", /HELD/, 20000,
       "the service ticket is no longer held");
@@ -686,9 +748,13 @@ async function aNegotiationWithNothingInCommonIsRefused(driver) {
       /accept-completed|REJECTED|FAILED|Offer at least/, 90000,
       "the NTLM-only negotiation produced no result");
   assert.ok(/REJECTED/.test(ntlm),
-    "and a client offering only NTLM must be rejected by a Kerberos-only " +
+    "a client offering only NTLM must be rejected by a Kerberos-only " +
     "acceptor: " + ntlm);
-  log.info("both directions of `no mechanism in common` are refused");
+  assert.ok(/no reason field|nothing anywhere says why/.test(ntlm),
+    "and the page must explain that SPNEGO carries no reason of its own — a " +
+    "rejection with an empty responseToken cannot be told from a wrong " +
+    "password, and that fact is the finding: " + ntlm);
+  log.info("`no mechanism in common` is refused with a reject token");
   log.debug("Leaving aNegotiationWithNothingInCommonIsRefused().");
 }
 
@@ -740,8 +806,9 @@ async function test() {
     kdcPort = ready.kdcPort;
   }
   if (!protectedUrl) {
-    protectedUrl = stsUrl + "/spnego/protected";
+    protectedUrl = companionUrl + "/spnego/protected";
   }
+  doorUrl = stsUrl + "/authn/spnego";
   // THE SPN IS DERIVED, exactly as the page derives it, and it is NOT replaced
   // with whatever the mock advertises. That replacement is what this test used to
   // do — "the mock advertises X rather than Y; using that" — and it is why the
@@ -808,9 +875,17 @@ async function test() {
     await theBannerLinkLeadsBackAndTheTicketIsThere(driver);
     await theChallengeIsBare(driver);
     await theHandshakeSucceedsAndIsExplained(driver);
+    await theDoorIssuesAndAcceptsATicketForItsOwnSpn(driver);
     await theTicketIsOpaqueUntilTheServiceKeyIsSupplied(driver);
     await aNegotiationWithNothingInCommonIsRefused(driver);
-    await withoutAnApRepNothingProvesTheServer(driver);
+    // PENDING: no door can withhold the AP-REP from an otherwise successful
+    // exchange any more — iya-sts's `?mutual=off` went with
+    // `/spnego/protected` (#595), and its sign-in door passes no such option.
+    // Asked for as rcbj/iya-sts#896; the section runs again when it lands.
+    log.warn("PENDING (rcbj/iya-sts#896): the missing-AP-REP check " +
+        "(RFC 4120 section 3.2.5) — no door can withhold the AP-REP from a " +
+        "successful exchange, so withoutAnApRepNothingProvesTheServer() is " +
+        "not run.");
     log.info("Test completed successfully.");
   } finally {
     await driver.quit();

@@ -99,6 +99,13 @@ async function principalsDocument(stsUrl) {
     accountPolicy: policy,
     realmsServed: view.realmsServed || [],
     serviceAccount: view.acceptor || null,
+    // The sign-in door's acceptor account (`/authn/spnego`), keyed from these
+    // settings unless an operator stored a random key over it.
+    serviceAccountSettings: {
+      principal: settingOf(config, "krb5.servicePrincipal"),
+      password: settingOf(config, "krb5.servicePassword"),
+      salt: settingOf(config, "krb5.serviceSalt")
+    },
     kerberos: view.kerberos || null
   };
   log.debug("Leaving principalsDocument(). " + rows.length + " principals.");
