@@ -704,6 +704,45 @@ async function describePac(found, keys, problems, serviceKey) {
     });
   }
 
+  // The two claims buffers ([MS-PAC] 2.11), decoded since 2026-10-06. One
+  // row per claim, its id, type and values — and the compression, because a
+  // set that arrived compressed and was decompressed here is a fact about the
+  // KDC that wrote it.
+  [kpac.TYPE.CLIENT_CLAIMS, kpac.TYPE.DEVICE_CLAIMS].forEach(function (t) {
+    var buffer = kpac.bufferOfType(parsed, t);
+    if (!buffer) {
+      return;
+    }
+    if (!buffer.parsed) {
+      section.sections.push({
+        title: buffer.typeName,
+        rows: [row("does not parse", buffer.error || "(no reason recorded)")]
+      });
+      return;
+    }
+    var c = buffer.parsed;
+    var rows = c.empty
+      ? [row("claims", "(an empty buffer: no claims)")]
+      : [row("compression", c.compressionName, c.compressionFormat ?
+            "decompressed here: " + c.claimsSetSize + " bytes to " +
+            c.uncompressedClaimsSetSize : null)].concat(
+          c.claims.map(function (claim) {
+            return row(claim.id, claim.typeName + ": " +
+                claim.values.join(", "), "source " +
+                (claim.sourceType === kpac.CLAIMS_SOURCE_TYPE.AD ? "AD" :
+                 claim.sourceType));
+          }));
+    section.sections.push({
+      title: buffer.typeName,
+      note: t === kpac.TYPE.CLIENT_CLAIMS
+        ? "The client's claims — what a service doing claims-based access " +
+          "control (Dynamic Access Control) authorizes on, beside the SIDs."
+        : "The claims of the DEVICE the client authenticated from, present " +
+          "only with compound identity (FAST armor naming a computer).",
+      rows: rows
+    });
+  });
+
   // Anything present that this codec does not decode, listed rather than
   // dropped.
   var undecoded = parsed.buffers.filter(function (b) {
