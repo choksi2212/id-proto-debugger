@@ -2695,8 +2695,11 @@ function buildJobs() {
       STS_URL: env.STS_URL || "https://localhost:8081",
       KRB5_KDC_HOST: env.KRB5_KDC_HOST || "sts",
       KRB5_KDC_PORT: env.KRB5_KDC_PORT || "88",
-      KRB5_SERVICE_HOST: env.KRB5_SERVICE_HOST || "sts",
+      // The ticket-protected service is iya-sts's COMPANION since iya-sts
+      // #595; with no KRB5_SERVICE_HOST the job takes COMPANION_URL's host.
+      KRB5_SERVICE_HOST: env.KRB5_SERVICE_HOST || "",
       KRB5_SERVICE_PORT: env.KRB5_SERVICE_PORT || "8888",
+      COMPANION_URL: env.COMPANION_URL || "http://localhost:9700",
     },
   };
   if (kerberosPagesSkip) tgsApPageJob.skip = kerberosPagesSkip;

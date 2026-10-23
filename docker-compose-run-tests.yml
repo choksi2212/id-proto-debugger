@@ -626,6 +626,48 @@ services:
       - keycloak
     ports:
       - "8082:8080"
+  # IYA-STS'S DEVELOPMENT COMPANION (iya-sts #594, #595): the click-through
+  # demonstrations iya-sts moved out of its runtime — the OpenID4VCI issuer's
+  # offer pages, the SPNEGO-protected page and the Kerberos-protected TCP
+  # service. It reaches iya-sts only through /admin-api (registering itself
+  # with the pinned bootstrap secret, creating its own service principal and
+  # keytab) and verifies iya-sts's TLS against the stack's root.
+  #
+  # Its host name is `companion`, so its SPN is HTTP/companion — a host of its
+  # own, which is what its own docs ask for: Kerberos names a service by host
+  # and not by port. The debugger's pages and the browser in the tests
+  # container reach it at http://companion:9700.
+  companion:
+    container_name: id-proto-debugger-companion
+    hostname: companion
+    image: ${COMPANION_IMAGE:-${IMAGE_REGISTRY:-ghcr.io/rcbj/id-proto-debugger}/companion:${IMAGE_TAG:-latest}}
+    build:
+      context: ./sts/companion
+      additional_contexts: *mirror-contexts
+    environment:
+      - COMPANION_PORT=9700
+      - COMPANION_PUBLIC_URL=http://companion:9700
+      - COMPANION_STS_URL=https://sts:8081
+      - COMPANION_STS_PUBLIC_URL=https://sts:8081
+      - COMPANION_STS_CA_FILE=/etc/idptools/tls/stack-tls-cert.pem
+      - COMPANION_BOOTSTRAP_SECRET=${ADMIN_API_CLIENT_SECRET:-}
+      - COMPANION_WALLET_URL=https://client:3000/vc-issuance-1.html
+      - COMPANION_KRB5_SERVICE_PORT=8888
+      - COMPANION_LOG_LEVEL=info
+    volumes:
+      - ${STACK_TLS_DIR:-./generated-tls}:/etc/idptools/tls:ro
+    depends_on:
+      sts:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get({host:'localhost',port:9700,path:'/healthz'},function(r){process.exit(r.statusCode===200?0:1)}).on('error',function(){process.exit(1)})\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - keycloak
+
   tests:
     container_name: tests
     image: ${IMAGE_REGISTRY:-ghcr.io/rcbj/id-proto-debugger}/test:${IMAGE_TAG:-latest}
@@ -693,6 +735,7 @@ services:
       # service on HOST networking, where the test's own default of
       # `localhost` is already the right answer.
       SSF_RECEIVER_HOST: tests
+      COMPANION_URL: http://companion:9700
       # The SPKI pin for the stack's own certificate, so Chrome in here
       # trusts https://client:3000 and https://api:4000. FORWARDED rather
       # than recomputed from the mounted PEM, so that the pin Chrome is
@@ -755,6 +798,8 @@ services:
       waltid-verifier:
         condition: service_healthy
       keycloak-wsfed:
+        condition: service_healthy
+      companion:
         condition: service_healthy
     networks:
      - keycloak

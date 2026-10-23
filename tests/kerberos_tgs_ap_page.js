@@ -62,7 +62,15 @@ var apiUrl = process.env.API_URL || "https://localhost:4000";
 var stsUrl = process.env.STS_URL || "https://localhost:8081";
 var kdcHost = process.env.KRB5_KDC_HOST || "localhost";
 var kdcPort = process.env.KRB5_KDC_PORT || "88";
-var serviceHost = process.env.KRB5_SERVICE_HOST || kdcHost;
+// THE TICKET-PROTECTED SERVICE IS iya-sts's COMPANION (iya-sts #595): its
+// TCP service on 8888, behind its own principal HTTP/<its host>, which it
+// creates in iya-sts's KDC through /admin-api the first time it is asked.
+// The host defaults to the companion URL's, which is the name the api's relay
+// resolves — `companion` on the containerized bridge, `localhost` on the host
+// stack.
+var companionUrl = process.env.COMPANION_URL || "http://localhost:9700";
+var serviceHost = process.env.KRB5_SERVICE_HOST ||
+    new URL(companionUrl).hostname;
 var servicePort = process.env.KRB5_SERVICE_PORT || "8888";
 var realm = process.env.KRB5_REALM || "EXAMPLE.COM";
 // Generated per run, prefixed with this file's name. The mock KDC registers an
@@ -72,7 +80,10 @@ var realm = process.env.KRB5_REALM || "EXAMPLE.COM";
 var principal = process.env.KRB5_PRINCIPAL || usernameFor("kerberos-tgs-ap");
 // One password for every user in the mock KDC, whoever KRB5_PRINCIPAL names.
 var password = process.env.KRB5_PASSWORD || "password!";
-var spn = process.env.KRB5_SPN || "HTTP/web.example.com";
+// Read off the companion in preconditions() unless KRB5_SPN pins it: the
+// companion's one keytab holds one principal, so a ticket for any other name
+// is one its acceptor cannot open.
+var spn = process.env.KRB5_SPN || "";
 
 async function waitForText(driver, id, pattern, timeoutMs, what) {
   // Content, not elements: every field here is static markup, so elementLocated
@@ -178,13 +189,31 @@ async function preconditions() {
       log.debug("Leaving preconditions().");
       return { ok: false, why: unusable };
     }
-    const service = await fetch(stsUrl + "/krb5/service");
+    // `/spnego?format=json` is what makes the companion provision its
+    // keytab, and it names the principal; a 503 says why it has none yet.
+    const advert = await fetch(companionUrl + "/spnego?format=json");
+    const advertBody = await advert.json().catch(function () {
+      return {};
+    });
+    if (!advert.ok) {
+      log.debug("Leaving preconditions().");
+      return {
+        ok: false,
+        why: "iya-sts's companion at " + companionUrl + " has no service " +
+        "key (GET /spnego?format=json answered " + advert.status + ": " +
+        (advertBody.problem || "no reason given") + ")"
+      };
+    }
+    if (!spn) {
+      spn = String(advertBody.servicePrincipalName || "").split("@")[0];
+    }
+    const service = await fetch(companionUrl + "/krb5/service");
     if (!service.ok) {
       log.debug("Leaving preconditions().");
       return {
         ok: false,
-        why: "the mock STS has no ticket-protected service (" +
-        stsUrl + "/krb5/service answered " + service.status + ")"
+        why: "iya-sts's companion has no ticket-protected service (" +
+        companionUrl + "/krb5/service answered " + service.status + ")"
       };
     }
     const limits = await fetch(apiUrl + "/krb5/limits");
