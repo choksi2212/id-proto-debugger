@@ -801,7 +801,7 @@ async function theHandoffCarriesTheWholeTokenSet(driver) {
       "  {source:'the token endpoint', at: Date.now()}));" +
       "sessionStorage.setItem('token_handoff_set', JSON.stringify(" +
       "  {idToken: id, refreshToken:'rt', tokenType:'Bearer'," +
-      "   scope:'openid ssf:read ssf:write', expiresIn: 300}));" +
+      "   scope:'openid ssf.read ssf.manage', expiresIn: 300}));" +
       "return id;");
   assert.ok(idToken.length > 20);
   await driver.navigate().refresh();
@@ -1081,7 +1081,7 @@ async function theConsoleIsClean(driver) {
 // SSF 1.0 gives no route to discover the names. Section 8 has the transmitter
 // publish `authorization_schemes`, and each entry carries `spec_urn` and
 // nothing else — no scope, no audience — so "an OAuth 2.0 bearer token" is
-// the whole of what a receiver can learn. `ssf:read` and `ssf:write` are this
+// the whole of what a receiver can learn. `ssf.read` and `ssf.manage` are this
 // stack's mock's, and they are what ssf.js names.
 //
 // FOUR THINGS ARE ASSERTED, and the last two are the ones that would rot:
@@ -1097,7 +1097,7 @@ async function theConsoleIsClean(driver) {
 //     a hand-off that overwrote the field would take away the identity of
 //     the very workflow that asked;
 //   * and it is IDEMPOTENT. Running the hand-off twice must not leave
-//     "ssf:read ssf:read" in the field.
+//     "ssf.read ssf.read" in the field.
 //
 // It runs after the console check on purpose: it navigates to two other
 // pages, and `logs().get("browser")` drains the whole session, so a discovery
@@ -1135,7 +1135,7 @@ async function theHandoffAsksForTheScopesTheEndpointsNeed(driver) {
 
   const authzScope = await valueOf(driver, "scope");
   const authzTokens = authzScope.split(/\s+/).filter(Boolean);
-  ["ssf:read", "ssf:write"].forEach(function (wanted) {
+  ["ssf.read", "ssf.manage"].forEach(function (wanted) {
     assert.ok(authzTokens.indexOf(wanted) >= 0,
         "the authorization request's Scope field reads \"" + authzScope +
         "\" and does not ask for \"" + wanted + "\". SSF 1.0 section 8 " +
@@ -1167,7 +1167,7 @@ async function theHandoffAsksForTheScopesTheEndpointsNeed(driver) {
   assert.ok(/Shared Signals/.test(banner),
       "the banner does not name the workflow that is waiting: " +
       banner.slice(0, 200));
-  assert.ok(/ssf:read/.test(banner),
+  assert.ok(/ssf\.read/.test(banner),
       "the banner does not say which scopes were added, so a field that " +
       "changed under the reader changed for no stated reason: " +
       banner.slice(0, 300));
@@ -1183,7 +1183,7 @@ async function theHandoffAsksForTheScopesTheEndpointsNeed(driver) {
   }, WAIT, "no hand-off banner on the results page");
   const tokenScope = await valueOf(driver, "token_scope");
   const tokenTokens = tokenScope.split(/\s+/).filter(Boolean);
-  ["ssf:read", "ssf:write"].forEach(function (wanted) {
+  ["ssf.read", "ssf.manage"].forEach(function (wanted) {
     assert.ok(tokenTokens.indexOf(wanted) >= 0,
         "the token request's Scope field reads \"" + tokenScope + "\" and " +
         "does not ask for \"" + wanted + "\". This is the field client " +
@@ -1203,7 +1203,7 @@ async function theHandoffAsksForTheScopesTheEndpointsNeed(driver) {
       "  sessionStorage.removeItem(k); });" +
       "localStorage.removeItem('scope');" +
       "localStorage.removeItem('token_scope');");
-  log.info("[scope] OK — both scope fields ask for ssf:read and ssf:write, " +
+  log.info("[scope] OK — both scope fields ask for ssf.read and ssf.manage, " +
       "and the reader's own scopes survived.");
   log.debug("Leaving theHandoffAsksForTheScopesTheEndpointsNeed().");
 }

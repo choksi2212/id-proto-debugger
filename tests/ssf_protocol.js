@@ -51,6 +51,7 @@ const http = require("http");
 const { Command, Option } = require("commander");
 const paths = require("./module_paths.js");
 const { mustBeAbleTo } = require("./expectation.js");
+const registry = require("./sts_applications.js");
 
 var appconfig = require(process.env.CONFIG_FILE);
 var bunyan = require("bunyan");
@@ -324,7 +325,7 @@ async function theGateRefusesAndTellsTheScopesApart() {
   });
   // The two scopes, which is the only place in this service besides SCIM
   // where two scopes differ in what they permit.
-  const readToken = await tokenWith('ssf:read');
+  const readToken = await tokenWith('ssf.read');
   if (!readToken) {
     skip('the scope policy', 'no token endpoint answered.');
     log.info("[auth] partly skipped.");
@@ -332,21 +333,21 @@ async function theGateRefusesAndTellsTheScopesApart() {
   }
   const readOk = await call('GET', where.url, null,
       { authorization: 'Bearer ' + readToken });
-  check('ssf:read reads', function () {
+  check('ssf.read reads', function () {
     assert.strictEqual(readOk.status, 200,
         'A read-scoped token was refused: ' + readOk.text);
   });
   const writeRefused = await call('POST', where.url,
       { delivery: { method: ssf.DELIVERY_POLL } },
       { authorization: 'Bearer ' + readToken });
-  check('ssf:read does NOT write, and the refusal names the scope',
+  check('ssf.read does NOT write, and the refusal names the scope',
     function () {
       assert.strictEqual(writeRefused.status, 403,
           'A read-scoped token created a stream. It answered ' +
           writeRefused.status + ': ' + writeRefused.text);
       assert.strictEqual((writeRefused.body || {}).err, 'access_denied');
       assert.ok(String((writeRefused.body || {}).description)
-          .indexOf('ssf:write') >= 0,
+          .indexOf('ssf.manage') >= 0,
           'The refusal has to NAME the scope, or a caller cannot act on it.');
     });
   log.info("[auth] OK.");
@@ -1191,6 +1192,24 @@ async function test() {
     stsUrl + "/ssf, did not answer. Start the stack, or set " +
     "SSF_TRANSMITTER_URL to one that does — and note it is a BASE url, not " +
     "the WS-Trust endpoint WSTRUST_STS_URL holds.");
+  // Section 2 asks the token endpoint for `ssf.read`, which the mock issues
+  // only to a client that DECLARES it (iya-sts #110) — so the client is
+  // registered with that declaration first, or the scope sections never run.
+  const runnerFields = {
+    oauthClientId: ['ssf-protocol-runner'],
+    oauthGrantType: ['client_credentials']
+  };
+  if (await registry.registryEditable(registry.baseOf(stsUrl),
+                                      'oauthAllowedScope')) {
+    runnerFields.oauthAllowedScope = ['ssf.read'];
+  }
+  await registry.provision(registry.baseOf(stsUrl), {
+    identifier: 'ssf-protocol-runner',
+    name: 'SSF protocol test client',
+    protocols: ['oauth2'],
+    fields: runnerFields,
+    why: 'the receiver this job agrees streams as'
+  });
   await startReceiver();
   try {
     await theMetadataIsReadable();

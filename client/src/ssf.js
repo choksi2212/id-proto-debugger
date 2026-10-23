@@ -93,13 +93,14 @@ var BACKEND_AVAILABLE = appconfig.backendAvailable !== false;
 // OAuth 2.0 bearer token" still has no way to discover what that token must
 // say, and the specification defines no scope names to guess at.
 //
-// `ssf:read` and `ssf:write` are what this stack's mock transmitter uses, and
-// they are the two names most transmitters have settled on. They are also two
-// DIFFERENT permissions rather than a pair: read gets a stream, its status
-// and its poll queue; write creates, updates, deletes, adds and removes
-// subjects, and triggers a verification event. Asking for one and using the
-// other is a 403 naming a scope, which is the most common way this workflow
-// fails for a reason that has nothing to do with SSF.
+// `ssf.read` and `ssf.manage` are the OpenID CAEP Interoperability
+// Profile's names, and what this stack's mock transmitter uses (it used
+// `ssf:read` and `ssf:write` until 2026-10). Read gets a stream, its status
+// and its poll queue; manage creates, updates, deletes, adds and removes
+// subjects, and triggers a verification event — and the profile says manage
+// INCLUDES read. Holding only read and trying to change a stream is a 403
+// naming a scope, which is the most common way this workflow fails for a
+// reason that has nothing to do with SSF.
 //
 // `openid` is here for a different reason and is not the transmitter's
 // business at all: this pane names the authenticated user, and an access
@@ -110,7 +111,7 @@ var BACKEND_AVAILABLE = appconfig.backendAvailable !== false;
 // already holds rather than replacing it, and it stays editable there,
 // because a transmitter using different names is not a bug in either page.
 // ---------------------------------------------------------------------------
-var HANDOFF_SCOPES = 'openid ssf:read ssf:write';
+var HANDOFF_SCOPES = 'openid ssf.read ssf.manage';
 
 // Fields written to localStorage. THE CREDENTIALS ARE NOT HERE — see the
 // header. `ssf_access_token`, `ssf_id_token`, `ssf_basic_password`,

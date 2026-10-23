@@ -433,7 +433,7 @@ async function eachGrantShapeSeedsTheSession(driver) {
     idToken: idTokenOf({ iss: stsUrl, sub: 'urn:sts-mock:user:alice',
       sid: 'a-real-session-id', acr: 'urn:example:silver', amr: ['pwd'],
       preferred_username: 'alice' }),
-    tokenType: 'Bearer', scope: 'openid ssf:read ssf:write', expiresIn: 3600
+    tokenType: 'Bearer', scope: 'openid ssf.read ssf.manage', expiresIn: 3600
   });
   await click(driver, "btn_caep_seed");
   const withSid = await textOf(driver, "caep_seed_note");
@@ -490,7 +490,7 @@ async function eachGrantShapeSeedsTheSession(driver) {
   // (c) NO ID TOKEN AT ALL — two of the six grants, and not an error.
   await handOff(driver, {
     accessToken: 'opaque-access-token', idToken: '',
-    tokenType: 'Bearer', scope: 'ssf:read ssf:write', expiresIn: 3600
+    tokenType: 'Bearer', scope: 'ssf.read ssf.manage', expiresIn: 3600
   });
   await click(driver, "btn_caep_seed");
   const none = await textOf(driver, "caep_seed_note");
@@ -536,8 +536,8 @@ async function eachGrantShapeSeedsTheSession(driver) {
 // failing for their reasons and reported as a CAEP defect.
 // ---------------------------------------------------------------------------
 //
-// NEITHER ASKS FOR AN `ssf:` SCOPE, and they did until the 2026-09 bump. Since
-// iya-sts #110 `ssf:read` and `ssf:write` are that service's own PROTECTED
+// NEITHER ASKS FOR AN SSF SCOPE, and they did until the 2026-09 bump. Since
+// iya-sts #110 `ssf.read` and `ssf.manage` are that service's own PROTECTED
 // scopes, issued only to a client whose `oauthAllowedScope` declares them —
 // and `webapp1` declares neither, so asking for one was an invalid_scope 400
 // from the token endpoint, which reached this page's console as a failed
