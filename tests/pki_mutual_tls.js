@@ -77,7 +77,7 @@ const { Command, Option } = require("commander");
 const assert = require("assert");
 const nodeCrypto = require("crypto");
 const browserFlags = require("./browser_flags.js");
-const { declineToRun, mustBeAbleTo } = require("./expectation.js");
+const { declineToRun } = require("./expectation.js");
 const { loadUrl } = require("./page_load.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
@@ -293,31 +293,54 @@ async function stsJson(path, options) {
   return parsed;
 }
 
+// THE TRUSTSTORE'S DOOR IS `/admin-api/tls/trust/{add,remove}` since iya-sts
+// #597 deleted the open `POST /tls/trust` and `/tls/trust/clear`. There is no
+// bulk clear any more, and none is needed: this run's Root is generated
+// fresh, so nothing already in the store can verify its leaf, and what has to
+// be put back afterwards is exactly the anchors this run added — by
+// fingerprint, which also leaves every other job's anchors alone.
+let addedFingerprints = [];
+
 async function trustTheIssuer(pem) {
   log.debug("Entering trustTheIssuer().");
-  const result = await stsJson("/tls/trust", {
+  const result = await stsJson("/admin-api/tls/trust/add", {
     method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: pem
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ certificates: pem })
   });
-  assert.ok(result.anchors >= 1,
-    "the mock STS did not record the CA as a trust anchor: " +
+  assert.ok(result.ok && result.anchors >= 1,
+    "iya-sts did not record the CA as a trust anchor: " +
     JSON.stringify(result));
-  log.info("The mock STS now trusts " + result.anchors +
-           " client certificate issuer(s): " +
-           (result.subjects || []).join("; "));
+  (result.addedAnchors || []).forEach(function (one) {
+    addedFingerprints.push(one.fingerprint256);
+  });
+  log.info("iya-sts now trusts " + result.anchors +
+           " client certificate issuer(s), " + result.added +
+           " added by this run: " + (result.addedAnchors || [])
+             .map(function (one) {
+               return one.subject;
+             }).join("; "));
   log.debug("Leaving trustTheIssuer().");
   return result;
 }
 
-async function untrustEverything() {
-  log.debug("Entering untrustEverything().");
-  const result = await stsJson("/tls/trust/clear", { method: "POST" });
-  assert.strictEqual(result.anchors, 0,
-    "the mock STS's client truststore was not emptied: " +
-    JSON.stringify(result));
-  log.debug("Leaving untrustEverything(). removed=" + result.removed);
-  return result;
+async function untrustWhatThisRunAdded() {
+  log.debug("Entering untrustWhatThisRunAdded().");
+  const prints = addedFingerprints.slice();
+  addedFingerprints = [];
+  let fingerprint;
+  for (fingerprint of prints) {
+    const result = await stsJson("/admin-api/tls/trust/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fingerprint: fingerprint })
+    });
+    assert.ok(result.ok,
+      "iya-sts would not remove the anchor this run added (" + fingerprint +
+      "): " + JSON.stringify(result));
+  }
+  log.debug("Leaving untrustWhatThisRunAdded(). removed=" + prints.length);
+  return prints.length;
 }
 
 async function serverCertificatePem() {
@@ -556,7 +579,7 @@ async function theServerReportsWhatThisPageIssued(driver, ports, tlsHost) {
   // anyway — and the server's own account is the only thing that says the
   // certificate was not accepted. A test that read only this end would call
   // this a success.
-  await untrustEverything();
+  await untrustWhatThisRunAdded();
   const before = await runTlsTest(driver, {
     host: tlsHost, port: ports.optional, servername: tlsHost,
     trustPem: trustPem, clientSubject: "Mutual TLS Client",
@@ -571,8 +594,8 @@ async function theServerReportsWhatThisPageIssued(driver, ports, tlsHost) {
     "page asked for it (pki_tls_http_probe), so either the api did not make " +
     "the request or the pane did not render the answer.");
   assert.ok(/NOT verified/.test(before.serverView),
-    "the mock STS's truststore was emptied a moment ago, so it cannot have " +
-    "verified this certificate — and the page must report what the SERVER " +
+    "nothing in iya-sts's truststore issued this run's fresh Root, so it " +
+    "cannot have verified this certificate — and the page must report what the SERVER " +
     "said rather than what the handshake did:\n" + before.serverView);
   assert.ok(before.serverView.indexOf(leafThumbprint) >= 0,
     "the server did not report the thumbprint of the certificate this page " +
@@ -821,33 +844,17 @@ async function test() {
   // not the count: the certificate must be asked for, because a socket that
   // never asks is one no certificate can arrive on, and nothing below could
   // then be about a certificate at all.
-  let ports = null;
-  let tlsHost = "";
-  try {
-    const described = await stsJson("/tls?format=json");
-    const asked = (described.listeners || []).filter(function (listener) {
-      return listener.listening && !listener.requiresClientCertificate;
-    })[0];
-    assert.ok(asked,
-      "the mock STS publishes no listening port that accepts a client " +
-      "certificate: " + JSON.stringify(described.listeners));
-    assert.ok(asked.requestsClientCertificate !== false,
-      "the mock STS's main port does not ASK for a client certificate, so " +
-      "none can arrive on it however carefully this test presents one. That " +
-      "is `global.https` being off there, and the whole of this file is " +
-      "about a certificate arriving: " + JSON.stringify(asked));
-    ports = { optional: asked.port };
-    tlsHost = new URL(stsBaseUrl).hostname;
-  } catch (e) {
-    // PRESENT and lacking the capability, so a FAILURE rather than a skip:
-    // STS_TLS_URL named this service, so it is there. See
-    // tests/expectation.js.
-    log.debug("Leaving test(). The mock publishes no TLS endpoint.");
-    mustBeAbleTo(false, "The mock STS at " + stsBaseUrl + " is reachable, " +
-      "but", "it publishes no TLS endpoint (" + e.message + "). Either that " +
-      "document has moved or the sts/ submodule is older than the main " +
-      "port's own entry in it.");
-  }
+  // ONE LISTENER, AND IT IS THE MAIN PORT. iya-sts deleted its separate
+  // TLS listeners on 2026-09-16 and its `/tls` description page with #597;
+  // the main port asks every handshake for a client certificate and requires
+  // none. Whether one arrives is the "before trusting" run's own assertion
+  // below — the server reports the thumbprint it saw — so nothing has to be
+  // read off a description first.
+  const stsAddress = new URL(stsBaseUrl);
+  const ports = { optional: Number(stsAddress.port ||
+                                   (stsAddress.protocol === "https:" ? 443
+                                                                     : 80)) };
+  const tlsHost = stsAddress.hostname;
   log.info("The mock STS accepts a client certificate on " + tlsHost + ":" +
            ports.optional + " (asked for, never required).");
 
@@ -938,9 +945,10 @@ async function test() {
     // "before trusting" case pass for the wrong reason — which is exactly the
     // kind of test that quietly stops asserting.
     try {
-      await untrustEverything();
+      await untrustWhatThisRunAdded();
     } catch (e) {
-      log.warn("could not empty the mock STS's truststore afterwards: " +
+      log.warn("could not take this run's anchors out of iya-sts's " +
+               "truststore afterwards: " +
                e.message);
     }
     await driver.quit();
