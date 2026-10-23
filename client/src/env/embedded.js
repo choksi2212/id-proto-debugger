@@ -72,6 +72,13 @@ var config = {
   wstrustStsUrlDefault: STS + "/sts",
   oid4vciIssuerUrlDefault: STS,
   oid4vpVerifierUrlDefault: STS,
+  // THE ISSUER'S AND THE VERIFIER'S WEBSITES: the pages where a person
+  // starts an offer or a verification, which the two chooser pages
+  // (vc-issuance-0, vc-presentation-0) send the reader to. A different
+  // party from the issuer and Verifier above, at a URL of its own; on
+  // this suite's stacks it is iya-sts's development companion.
+  oid4vciIssuerSiteUrlDefault: "",
+  oid4vpVerifierSiteUrlDefault: "",
   rfc8414MetadataUrlDefault: STS + "/.well-known/oauth-authorization-server",
 
   // Kerberos: the KDC is dialed by the api, in the same container as the mock
@@ -82,10 +89,11 @@ var config = {
   krb5KdcPortDefault: "88",
   krb5PrincipalDefault: "alice",
   krb5PasswordDefault: "password!",
-  // SPNEGO's URL is fetched by the api too, but it is an HTTP URL on the mock
-  // STS's main listener, so it takes the placeholder like the rest. The SPN
+  // EMPTY: the SPNEGO-protected page left iya-sts for its development
+  // companion (iya-sts #595), which is not part of the service that embeds
+  // this build, so there is no page of iya-sts's own to pre-fill. The SPN
   // stays empty for the reason client/src/env/local.js gives.
-  krb5SpnegoUrlDefault: STS + "/spnego/protected",
+  krb5SpnegoUrlDefault: "",
   krb5SpnegoSpnDefault: "",
 
   // LDAP: dialed by the api, so localhost.

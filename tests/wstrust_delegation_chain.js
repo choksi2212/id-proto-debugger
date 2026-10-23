@@ -203,6 +203,7 @@ const { DOMParser } = require("@xmldom/xmldom");
 const { Command, Option } = require("commander");
 const browserFlags = require("./browser_flags.js");
 const consoleSignin = require("./console_signin.js");
+const registry = require("./sts_applications.js");
 const waitFor = require("./wait_for.js");
 const { loadPage } = require("./page_load.js");
 const common = require("./jwt_vc_json_common.js");
@@ -554,6 +555,30 @@ async function provisionApplication(app) {
     }
   }
 
+  // A FAMILY'S PRIMARY NAME IS FILLED IN BY DEFAULT since iya-sts #393: an
+  // application created for wstrust with no `wstrustAppliesTo` gets its own
+  // identifier there, which is what a sighting would have filed it under.
+  // The web application is never the AppliesTo of an RST here, and the
+  // assertion below says so — so whatever was filled in is taken off again.
+  // A remove is never refused.
+  if (!app.appliesTo) {
+    const before = await applicationEntry(app.identifier);
+    const filled = valuesOf(before && before.fields &&
+                            before.fields.wstrustAppliesTo);
+    for (let i = 0; i < filled.length; i++) {
+      const removed = await applicationsApi("remove", {
+        application: app.identifier,
+        attribute: "wstrustAppliesTo",
+        value: filled[i],
+      });
+      assert.ok(removed.ok && removed.body && removed.body.ok,
+        "removing the AppliesTo " + filled[i] + " iya-sts filled in on " +
+        app.identifier + " was refused: " + String(removed.raw).slice(0, 200));
+      log.info("[registry] " + app.identifier + ": removed the AppliesTo " +
+               filled[i] + " filled in at create; no RST names it.");
+    }
+  }
+
   // Read back through the LIST rather than trusting the write's own reply.
   const entry = await applicationEntry(app.identifier);
   assert.ok(entry, "the registry has no application called " + app.identifier +
@@ -598,6 +623,14 @@ async function provisionApplications() {
   const entries = [];
   for (let i = 0; i < APPLICATIONS.length; i++) {
     entries.push(await provisionApplication(APPLICATIONS[i]));
+  }
+  // WHO MAY ACT FOR WHOM. iya-sts decides every OnBehalfOf and ActAs through
+  // its delegation policy (#186): each requester must be allowed to hand the
+  // subject on to the tier its RST names. Both semantics are allowed, so the
+  // element under test — not the policy — is what tells the two jobs apart.
+  for (let i = 0; i < HOPS.length; i++) {
+    await registry.allowHop(stsBase(), {
+      actor: HOPS[i].as, target: HOPS[i].target, why: HOPS[i].what });
   }
   log.debug("Leaving provisionApplications(). " + entries.length + ".");
   return entries;
@@ -1251,12 +1284,103 @@ async function saveDrawing(session, urlPath, filename, what) {
   return text;
 }
 
+// THE DRAWINGS UNDER THE STATIC CONSOLE (iya-sts #446). The console's pages
+// are drawn in the browser now, so `/admin/...?format=svg` answers the HTML
+// shell. The lineage has a management API operation that draws it
+// (`GET /admin-api/tokens/credential?format=svg`), so it is saved and held to
+// naming every party of this chain; the map and the application view are
+// saved as the JSON graphs they are drawn from, as
+// oauth2_delegation_chain.js does.
+function assertDrawingNames(svg, names, what) {
+  log.debug("Entering assertDrawingNames(). " + what);
+  assert.ok(svg && svg.indexOf("<svg") >= 0,
+    what + " is not an SVG document: " + String(svg).slice(0, 200));
+  // The markup removed, and removed-and-joined: a label can be split across
+  // <tspan>s.
+  const drawn = svg.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  const joined = svg.replace(/<[^>]*>/g, "");
+  names.forEach(function (name) {
+    assert.ok(drawn.indexOf(name) >= 0 || joined.indexOf(name) >= 0,
+      what + " does not mention \"" + name + "\", so the picture is " +
+      "missing a box the graph says is in it. What it draws: " +
+      drawn.slice(0, 400));
+  });
+  log.debug("Leaving assertDrawingNames().");
+}
+
+async function saveStaticDrawings(finalId, suffix) {
+  log.debug("Entering saveStaticDrawings().");
+  const lineage = await saveDrawing(null,
+      "/admin-api/tokens/credential?id=" + encodeURIComponent(finalId) +
+      "&format=svg",
+      "wstrust-credential-lineage-" + PROVIDER + suffix + ".svg",
+      "where the final assertion came from — every generation behind it");
+  assertDrawingNames(lineage, [USER, WEBAPP, ESB, PROVIDER], "the lineage");
+  log.info("[drawing] the lineage names " + USER + ", " + WEBAPP + ", " +
+           ESB + " and " + PROVIDER + ".");
+  // The map, chain and application pictures are the static console's own
+  // drawings, with no management API operation of their own in the pinned
+  // iya-sts; the graphs they are drawn from are saved instead.
+  await saveDrawing(null,
+      "/admin-api/delegation?q=" + encodeURIComponent(USER) + "&per=200",
+      "wstrust-delegation-map-" + USER + suffix + ".json",
+      "the graph the delegation map is drawn from");
+  await saveDrawing(null,
+      "/admin-api/delegation/application?application=" +
+      encodeURIComponent(ESB),
+      "wstrust-delegation-application-" + ESB + suffix + ".json",
+      "everything " + ESB + " is part of — the tier in the middle");
+  log.debug("Leaving saveStaticDrawings().");
+}
+
 // One console page, as JSON. The console answers `?format=json` on every page
 // and refuses it with 401 rather than redirecting when there is no session,
 // which is the whole reason signInToTheConsole() exists. Null when the gate
 // turned it down — the caller reports that and moves on.
+// WHICH CONSOLE THIS SERVICE HAS. Since iya-sts #446 (2026-10-05) `/admin` is
+// a STATIC APPLICATION: every `/admin/*` path answers the same document, and
+// `?format=json` gets that shell back with a 200 — so a read here would see no
+// data and report an empty lineage about a page that no longer exists on the
+// server. The static console draws each page from the `/admin-api` operation
+// that mirrors it, so that is where this job reads it too.
+// oauth2_delegation_chain.js makes the same distinction the same way.
+let staticConsole = null;
+
+async function consoleIsStatic() {
+  log.debug("Entering consoleIsStatic().");
+  if (staticConsole !== null) {
+    log.debug("Leaving consoleIsStatic(). Cached: " + staticConsole);
+    return staticConsole;
+  }
+  const r = await fetch(stsBase() + "/admin/tokens", { redirect: "manual" });
+  const text = await r.text();
+  staticConsole = r.status === 200 && text.indexOf("/admin/console.js") >= 0;
+  log.info("[console] " + (staticConsole ?
+      "/admin is the static application (iya-sts #446): its pages are " +
+      "read through the /admin-api operations they mirror." :
+      "/admin is drawn on the server: its pages are read as they are."));
+  log.debug("Leaving consoleIsStatic(). " + staticConsole);
+  return staticConsole;
+}
+
 async function consoleJson(session, urlPath, what) {
   log.debug("Entering consoleJson(). " + urlPath);
+  if (await consoleIsStatic()) {
+    // The operation the page mirrors: the same path under /admin-api, with
+    // no `format` (JSON is its default). Not behind the console's gate, so
+    // the only thing that can refuse it is a missing access token — the
+    // run's configuration — and a refusal is a failure.
+    const apiPath = urlPath.replace(/^\/admin\//, "/admin-api/")
+        .replace(/([?&])format=json&?/, "$1").replace(/[?&]$/, "");
+    const api = await common.httpJson(stsBase() + apiPath,
+        { headers: { Accept: "application/json" } });
+    assert.ok(api.ok && api.body && typeof api.body === "object",
+      "GET " + stsBase() + apiPath + " (" + what + ") should answer 200 " +
+      "with JSON and answered " + api.status + ": " +
+      String(api.raw).slice(0, 200));
+    log.debug("Leaving consoleJson(). Read it through /admin-api.");
+    return api.body;
+  }
   const url = stsBase() + urlPath;
   const r = await common.httpJson(url,
       session ? { headers: { Cookie: session } } : undefined);
@@ -1419,6 +1543,12 @@ async function test() {
     // --- the drawings ------------------------------------------------------
     const filter = "?q=" + encodeURIComponent(USER);
     const suffix = "-" + DELEGATION.element;
+    if (await consoleIsStatic()) {
+      await saveStaticDrawings(second.id, suffix);
+      log.info("Test completed successfully.");
+      log.debug("Leaving test(). The static console's drawings saved.");
+      return;
+    }
     const svg = await saveDrawing(session,
         "/admin/delegation/map" + filter + "&format=svg",
         "wstrust-delegation-map-" + USER + suffix + ".svg",

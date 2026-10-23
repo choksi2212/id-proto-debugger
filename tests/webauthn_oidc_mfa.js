@@ -337,7 +337,9 @@ async function test() {
       // the Lab page was not. See waitForFocus() in tests/wait_for.js.
       await waitForFocus(driver, waitTime * 8);
       const heading = await driver.findElement(By.css("h1")).getText();
-      assert.ok(/Enrol/i.test(heading),
+      // "Create a passkey" since the sign-in screen became a static
+      // surface (iya-sts #571); "Enrol…" before it.
+      assert.ok(/Enrol|Create a passkey/i.test(heading),
         "with no key enrolled the step should register one; the " +
             "heading read: " + heading);
       await clickCeremonyButton(driver);
@@ -373,7 +375,9 @@ async function test() {
         await signIn(driver, MFA_USER, authorizeUrl("&acr_values=mfa"));
         await driver.wait(until.elementLocated(By.id("wa-go")), waitTime * 4);
         const heading = await driver.findElement(By.css("h1")).getText();
-        assert.ok(/Use your security key/i.test(heading),
+        // "Sign in with your passkey" since iya-sts #571.
+        assert.ok(/Use your security key|Sign in with your passkey/i
+          .test(heading),
           "the key enrolled earlier should now be asserted with, not " +
               "replaced; heading: " + heading);
         await clickCeremonyButton(driver);

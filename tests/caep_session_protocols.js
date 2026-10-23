@@ -91,6 +91,7 @@ const { Command, Option } = require("commander");
 const paths = require("./module_paths.js");
 const { mustBeReady, declineToRun } = require("./expectation.js");
 const registry = require("./sts_applications.js");
+const authnSignin = require("./authn_signin.js");
 const { usernameFor } = require("./random_username.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
@@ -233,14 +234,22 @@ function startUrlFor(who) {
       encodeURIComponent('https://rp11.example.com/acs') + '&providerId=' +
       encodeURIComponent(clientId());
   } else if (protocol === 'wsfed') {
+    // A `wreply` is named and registered (provisionFor()): since iya-sts
+    // #592 a request with none is refused 400 where the entry has no
+    // registered reply address.
     url = stsUrl + '/wsfed?wa=wsignin1.0&wtrealm=' +
-      encodeURIComponent(clientId());
+      encodeURIComponent(clientId()) + '&wreply=' +
+      encodeURIComponent(WSFED_REPLY);
   } else if (protocol === 'spnego') {
     url = stsUrl + '/authn/spnego';
   }
   log.debug("Leaving startUrlFor(). " + url);
   return url;
 }
+
+// Where a WS-Federation sign-in response would be posted. Nothing listens
+// there; the job stops at the session.
+const WSFED_REPLY = 'https://rp.example.com/wsfed';
 
 function clientId() {
   log.debug("Entering clientId().");
@@ -315,6 +324,13 @@ async function signOut(cookie) {
   const url = signOutUrlFor();
   const asked = await call('GET', url, null, { Cookie: cookie });
   const found = /name="confirm_for" value="([^"]*)"/.exec(asked.text || '');
+  // What the door said, by its page title: "Sign out?" asks, "Signed out"
+  // with no question means it found no session for this cookie to end —
+  // which is the state that sends no session-revoked at all.
+  const title = (/<title>([^<]*)</.exec(asked.text || '') || [])[1] || '';
+  log.info("[sign-out] " + url + " answered " + asked.status +
+           (title ? ' "' + title + '"' : '') +
+           (found ? ", asking to confirm." : "."));
   if (!found || url.indexOf('/oauth2/logout') < 0) {
     log.debug("Leaving signOut(). No confirmation asked: " + asked.status);
     return asked;
@@ -323,6 +339,7 @@ async function signOut(cookie) {
       'confirm=yes&confirm_for=' + encodeURIComponent(found[1]),
       { Cookie: cookie,
         'Content-Type': 'application/x-www-form-urlencoded' });
+  log.info("[sign-out] the confirmation was answered " + out.status + ".");
   log.debug("Leaving signOut(). Confirmed: " + out.status);
   return out;
 }
@@ -357,23 +374,24 @@ async function signIn(who) {
       'the endpoint is not enabled or the request was refused before ' +
       'authentication.' };
   }
-  const id = new URL(location, stsUrl).searchParams.get('authn');
-  const form = 'authn_id=' + encodeURIComponent(id) + '&username=' +
-      encodeURIComponent(who) + '&password=x';
-  const posted = await call('POST', stsUrl + '/authn/login', form,
-      { 'Content-Type': 'application/x-www-form-urlencoded' });
-  const cookie = cookieOf(posted);
+  // The screen is a static surface over /authn-api since iya-sts #571, so
+  // the sign-in is the page's own act, sent the way the page sends it.
+  const posted = await authnSignin.signIn(stsUrl,
+      new URL(location, stsUrl).href,
+      { action: 'login', username: who, password: 'x' });
+  const cookie = posted.next === 'redirect' ? cookieOf(posted) : '';
   if (!cookie) {
     log.debug("Leaving signIn(). No cookie.");
-    return { ok: false, why: 'the sign-in screen accepted the form (' +
-      posted.status + ') and set no session cookie' };
+    return { ok: false, why: 'the sign-in screen answered ' + posted.status +
+      ' (' + posted.next + ') and set no session cookie: ' +
+      JSON.stringify(posted.errors || []) };
   }
   // THE RETURN TRIP, which is the sign-in's own presentation and must NOT be
   // reported as single sign-on — `notePresented()` spends a one-shot flag on
   // it. If this stopped being free, every flow in this suite would emit a
   // session-presented milliseconds after its session-established and the event
   // that means SINGLE SIGN-ON HAPPENED would mean nothing.
-  const back = new URL(posted.headers.get('location') || start, stsUrl).href;
+  const back = new URL(posted.location || start, stsUrl).href;
   await call('GET', back, null, { Cookie: cookie });
   log.debug("Leaving signIn(). Signed in.");
   return { ok: true, cookie: cookie, start: start };
@@ -627,6 +645,7 @@ async function run() {
   // nothing else.
   await registry.provision(registry.stsBaseFor(stsUrl), {
     identifier: clientId(),
+    fields: protocol === 'wsfed' ? { wsfedReplyUrl: [WSFED_REPLY] } : {},
     why: 'the ' + protocol + ' sign-in this CAEP job drives'
   });
 
@@ -690,7 +709,17 @@ async function run() {
   // already been answered", a 400) before the session is looked at — so the
   // re-presentation emitted nothing and read as a missing session-presented.
   // The other four build the same URL either way.
-  await call('GET', startUrlFor(who), null, { Cookie: session.cookie });
+  const presented = await call('GET', startUrlFor(who), null,
+                               { Cookie: session.cookie });
+  // A presentation may ROTATE the session's handle and send the new cookie;
+  // the old one then names no live session, and the sign-out below would
+  // end nothing and send no session-revoked. So the cookie is taken up the
+  // way a browser takes it up.
+  const rotated = cookieOf(presented);
+  if (rotated && rotated !== session.cookie) {
+    log.info("[session] the presentation rotated the session cookie.");
+    session.cookie = rotated;
+  }
 
   // Which session the register filed it under, so the five by-hand events can
   // name it. Read off the mock rather than guessed: the identifier is random.
@@ -728,8 +757,33 @@ async function run() {
   await signOut(session.cookie);
 
   // --- what arrived, by both deliveries ---------------------------------
-  const polled = await pollSets(pollStream, who);
-  const pushed = await pushedSets();
+  // An emitted event reaches the stream ASYNCHRONOUSLY: the sign-out is
+  // answered before the session-revoked about it is queued, and a push is a
+  // further hop. So wait — up to fifteen seconds — until the revocation of
+  // THIS session has arrived by poll (and by push, where there is push),
+  // rather than reading whatever had arrived the instant the answer came.
+  // Nothing here acknowledges, so each read is everything so far.
+  let polled = [];
+  let pushed = [];
+  const revokedHere = function (tokens) {
+    return tokens.some(function (token) {
+      const read = typeOf(token);
+      return read.short === 'session-revoked' &&
+             namesSession(read, row.sessionId);
+    });
+  };
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    polled = await pollSets(pollStream, who);
+    pushed = await pushedSets();
+    if ((revokedHere(polled) && (!pushAvailable || revokedHere(pushed))) ||
+        Date.now() >= deadline) {
+      break;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 500);
+    });
+  }
   const seen = { poll: {}, push: {} };
   const model = caep.newSession({ iss: stsUrl, sub: row.sub,
     sid: row.sessionId });

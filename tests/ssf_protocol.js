@@ -51,6 +51,7 @@ const http = require("http");
 const { Command, Option } = require("commander");
 const paths = require("./module_paths.js");
 const { mustBeAbleTo } = require("./expectation.js");
+const registry = require("./sts_applications.js");
 
 var appconfig = require(process.env.CONFIG_FILE);
 var bunyan = require("bunyan");
@@ -183,7 +184,7 @@ async function call(method, url, body, options) {
 function settingRow(configDocument, key) {
   log.debug("Entering settingRow(). " + key);
   const doc = configDocument || {};
-  const rows = (doc.settings || []).slice();
+  const rows = (Array.isArray(doc.settings) ? doc.settings : []).slice();
   (doc.groups || []).forEach(function (group) {
     (group.settings || []).forEach(function (one) {
       rows.push(one);
@@ -324,7 +325,7 @@ async function theGateRefusesAndTellsTheScopesApart() {
   });
   // The two scopes, which is the only place in this service besides SCIM
   // where two scopes differ in what they permit.
-  const readToken = await tokenWith('ssf:read');
+  const readToken = await tokenWith('ssf.read');
   if (!readToken) {
     skip('the scope policy', 'no token endpoint answered.');
     log.info("[auth] partly skipped.");
@@ -332,21 +333,21 @@ async function theGateRefusesAndTellsTheScopesApart() {
   }
   const readOk = await call('GET', where.url, null,
       { authorization: 'Bearer ' + readToken });
-  check('ssf:read reads', function () {
+  check('ssf.read reads', function () {
     assert.strictEqual(readOk.status, 200,
         'A read-scoped token was refused: ' + readOk.text);
   });
   const writeRefused = await call('POST', where.url,
       { delivery: { method: ssf.DELIVERY_POLL } },
       { authorization: 'Bearer ' + readToken });
-  check('ssf:read does NOT write, and the refusal names the scope',
+  check('ssf.read does NOT write, and the refusal names the scope',
     function () {
       assert.strictEqual(writeRefused.status, 403,
           'A read-scoped token created a stream. It answered ' +
           writeRefused.status + ': ' + writeRefused.text);
       assert.strictEqual((writeRefused.body || {}).err, 'access_denied');
       assert.ok(String((writeRefused.body || {}).description)
-          .indexOf('ssf:write') >= 0,
+          .indexOf('ssf.manage') >= 0,
           'The refusal has to NAME the scope, or a caller cannot act on it.');
     });
   log.info("[auth] OK.");
@@ -654,7 +655,7 @@ async function theThreeStatusesBehaveDifferently() {
   await drain(poll, id);
   await call('POST', verify.url, { stream_id: id, state: 'while-enabled' },
       {});
-  const whileEnabled = await drain(poll, id);
+  const whileEnabled = await drainUntil(poll, id, 'while-enabled');
   check('an enabled stream delivers', function () {
     assert.ok(whileEnabled.length > 0,
         'A verification event was asked for on an enabled stream and nothing ' +
@@ -684,7 +685,7 @@ async function theThreeStatusesBehaveDifferently() {
     });
 
   await call('POST', status.url, { stream_id: id, status: 'enabled' }, {});
-  const afterResume = await drain(poll, id);
+  const afterResume = await drainUntil(poll, id, 'while-paused');
   check('and what happened while it was paused is STILL THERE', function () {
     assert.ok(afterResume.length > 0,
         'The event asked for while the stream was paused was lost. A pause ' +
@@ -702,6 +703,7 @@ async function theThreeStatusesBehaveDifferently() {
 
   await call('POST', verify.url, { stream_id: id, state: 'before-disable' },
       {});
+  await waitUntilQueued(poll, id, 'before-disable');
   await call('POST', status.url,
       { stream_id: id, status: 'disabled', reason: 'gone' }, {});
   await call('POST', status.url, { stream_id: id, status: 'enabled' }, {});
@@ -749,6 +751,68 @@ async function drain(pollUrl, streamId) {
   return out;
 }
 
+// The `state` a verification event carries back, or undefined.
+function verificationStateOf(one) {
+  log.debug("Entering verificationStateOf().");
+  const parsed = ssf.parseSet(one.token);
+  const payload = parsed.ok
+    ? (parsed.claims.events || {})[events.SSF_PREFIX + 'verification'] : null;
+  log.debug("Leaving verificationStateOf().");
+  return (payload || {}).state;
+}
+
+// A VERIFICATION EVENT IS DELIVERED ASYNCHRONOUSLY (iya-sts #144, SSF 1.0
+// section 8.1.4.2): the 204 says only that the transmitter "has transmitted
+// the event or will do so at some point in the future". So a poll made the
+// instant after it may find the queue still empty. This drains until the
+// event carrying `state` has arrived, or the deadline passes, and answers
+// everything it collected — acknowledged, as drain() does.
+async function drainUntil(pollUrl, streamId, state, timeoutMs) {
+  log.debug("Entering drainUntil(). " + streamId + " " + state);
+  const deadline = Date.now() + (timeoutMs || 15000);
+  let out = [];
+  for (;;) {
+    out = out.concat(await drain(pollUrl, streamId));
+    const arrived = out.some(function (one) {
+      return verificationStateOf(one) === state;
+    });
+    if (arrived || Date.now() >= deadline) {
+      log.debug("Leaving drainUntil(). " + out.length + ", arrived=" +
+                arrived);
+      return out;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 250);
+    });
+  }
+}
+
+// Whether the event carrying `state` is QUEUED, asked with a poll that
+// acknowledges nothing, so it stays where it is (RFC 8936 section 2.4: an
+// unacknowledged event is offered again). Used before a disable, which must
+// meet the event already on the queue for "a disable drops what was
+// waiting" to say anything.
+async function waitUntilQueued(pollUrl, streamId, state, timeoutMs) {
+  log.debug("Entering waitUntilQueued(). " + streamId + " " + state);
+  const deadline = Date.now() + (timeoutMs || 15000);
+  for (;;) {
+    const answer = await call('POST', pollUrl, ssf.buildPollRequest({
+      streamId: streamId, maxEvents: 50, returnImmediately: true }), {});
+    const read = answer.status === 200
+      ? ssf.readPollResponse(answer.body) : { jtis: [], sets: {} };
+    const queued = read.jtis.some(function (jti) {
+      return verificationStateOf({ token: read.sets[jti] }) === state;
+    });
+    if (queued || Date.now() >= deadline) {
+      log.debug("Leaving waitUntilQueued(). " + queued);
+      return queued;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 250);
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 6. DELIVERY.
 // ---------------------------------------------------------------------------
@@ -762,7 +826,10 @@ async function theVerificationEventIsWellFormed() {
   await drain(poll, id);
   await call('POST', verify.url, { stream_id: id, state: 'a-state-value' },
       {});
-  const got = await drain(poll, id);
+  const got = (await drainUntil(poll, id, 'a-state-value'))
+      .filter(function (one) {
+        return verificationStateOf(one) === 'a-state-value';
+      });
   assert.ok(got.length > 0, 'No verification event came back.');
   const parsed = ssf.parseSet(got[0].token);
   check('it is a compact JWS', function () {
@@ -989,98 +1056,19 @@ function stopReceiver() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. THE ROLES REVERSED.
+// 7. THE ROLES REVERSED — GONE UNTIL #363.
+//
+// This section signed SETs here and pushed them AT iya-sts's `/ssf/receive`,
+// with its issuer accepted for the run through `ssf.receiveIssuers`, and
+// asserted what a receiver must refuse. iya-sts #593 deleted that endpoint
+// and the setting: its receiver for a third party's signals is now a
+// federation relationship, which treats the sender as a full SSF transmitter
+// (discovery, a stream created AT the sender, a push secret, verification
+// against the sender's JWKS). Nothing here is one yet — that is
+// rcbj/id-proto-debugger#363, and this section moves onto it when it lands.
+// The api's own push inbox, the interim target the page jobs use, is
+// `api_ssf.js`'s subject already, so repeating it here would add nothing.
 // ---------------------------------------------------------------------------
-async function thisTestCanBeTheTransmitter() {
-  log.info("[transmit] The other half of the protocol: this test signs a SET " +
-      "and pushes it AT the mock, which is what a client acting as a " +
-      "transmitter does. Once with ES256 and once POST-QUANTUM, because a " +
-      "SET is the document most worth signing that way — RFC 8417 forbids it " +
-      "to expire, so it is read long after it was written.");
-  const url = stsUrl + '/ssf/receive';
-  // SINCE THE MOCK'S SSF 1.0 FINAL PASS (iya-sts #144) THAT RECEIVER CHECKS
-  // WHAT A RECEIVER MUST: the issuer (section 4.1.6) and the audience (RFC
-  // 8417 section 2.2). Its audience defaults to the endpoint's own URL, which
-  // a transmitter can discover without being told, so that is what this
-  // addresses; its accepted issuers default to the mock's OWN transmitter,
-  // so this test — a foreign transmitter — is added for the run and
-  // restoreSettings() takes it off again.
-  const issuer = 'https://ssf-protocol-test.example/';
-  await setSetting('ssf.receiveIssuers', issuer);
-  const algs = ['ES256', 'ML-DSA-44'];
-  let alg;
-  for (alg of algs) {
-    const pair = jws.generateKey(alg);
-    const priv = jws.privateJwk(alg, pair.privateKey, pair.publicKey);
-    const claims = ssf.buildSetClaims({
-      issuer: issuer,
-      audience: url,
-      uri: events.SSF_PREFIX + 'stream-updated',
-      payload: { status: 'paused', reason: 'from ssf_protocol.js' } });
-    const token = await ssf.signSet(claims, priv, alg, {});
-    const push = ssf.buildPushRequest(token, {});
-    const answer = await call('POST', url, push.body,
-        { anonymous: true, headers: push.headers });
-    const verdict = ssf.readPushResponse(answer.status, answer.body);
-    check('a ' + alg + '-signed SET is accepted', function () {
-      assert.ok(verdict.accepted,
-          'The mock refused a ' + alg + '-signed SET: ' + answer.status +
-          ' ' + answer.text);
-      assert.strictEqual(answer.status, 202,
-          'RFC 8935 section 2.3 makes a success a 202.');
-      assert.strictEqual(answer.text, '',
-          'A success is an EMPTY 202. A document here would be something a ' +
-          'transmitter could depend on that no receiver has to send.');
-    });
-  }
-  // And the half a receiver is FOR: an event addressed to somebody else.
-  const strayPair = jws.generateKey('ES256');
-  const strayToken = await ssf.signSet(ssf.buildSetClaims({
-    issuer: issuer, audience: 'https://somebody-else.example/',
-    uri: events.SSF_PREFIX + 'stream-updated',
-    payload: { status: 'paused', reason: 'addressed elsewhere' } }),
-  jws.privateJwk('ES256', strayPair.privateKey, strayPair.publicKey),
-  'ES256', {});
-  const strayPush = ssf.buildPushRequest(strayToken, {});
-  const stray = await call('POST', url, strayPush.body,
-      { anonymous: true, headers: strayPush.headers });
-  check('a SET addressed to somebody else is refused as invalid_audience',
-    function () {
-      assert.strictEqual(stray.status, 400, stray.text);
-      assert.strictEqual(ssf.readPushResponse(stray.status, stray.body).err,
-          'invalid_audience');
-    });
-  const malformed = await call('POST', url, 'not-a-jws',
-      { anonymous: true,
-        headers: { 'Content-Type': ssf.SET_MEDIA_TYPE } });
-  check('a body that is not a compact JWS is refused with an err',
-    function () {
-      assert.strictEqual(malformed.status, 400);
-      assert.strictEqual((malformed.body || {}).err, 'invalid_request');
-      assert.ok(String((malformed.body || {}).description)
-          .indexOf('three') >= 0);
-    });
-  const empty = await call('POST', url, '',
-      { anonymous: true,
-        headers: { 'Content-Type': ssf.SET_MEDIA_TYPE } });
-  check('an empty body is refused naming RFC 8935 section 2.1', function () {
-    assert.strictEqual(empty.status, 400);
-    assert.ok(String((empty.body || {}).description).indexOf('2.1') >= 0);
-  });
-  const seen = await call('GET', stsUrl + '/ssf/received', null, {});
-  check('what arrived is visible, with the media type it came under',
-    function () {
-      assert.strictEqual(seen.status, 200);
-      const rows = (seen.body || {}).received || [];
-      assert.ok(rows.length >= 2,
-          'The mock recorded ' + rows.length + ' pushed event(s) and this ' +
-          'section sent at least two.');
-      assert.ok(rows.some(function (one) {
-        return one.correctMediaType === true;
-      }));
-    });
-  log.info("[transmit] OK.");
-}
 
 // ---------------------------------------------------------------------------
 // 8. THE DELIBERATE DEFECTS.
@@ -1100,7 +1088,7 @@ async function theDefectsAreReachable() {
     subject: { format: 'iss_sub', iss: 'https://i/',
       sub: 'alice' } }, {});
   await call('POST', verify.url, { stream_id: id, state: 'legacy' }, {});
-  const withLegacy = await drain(poll, id);
+  const withLegacy = await drainUntil(poll, id, 'legacy');
   check('ssf.legacySubClaim is REPORTED as a finding rather than accepted',
     function () {
       // The verification event carries no subject, so the legacy claim only
@@ -1117,7 +1105,7 @@ async function theDefectsAreReachable() {
   await setSetting('ssf.breakSetSignature', 'true');
   await drain(poll, id);
   await call('POST', verify.url, { stream_id: id, state: 'broken' }, {});
-  const broken = await drain(poll, id);
+  const broken = await drainUntil(poll, id, 'broken');
   await setSetting('ssf.breakSetSignature', 'false');
   if (!broken.length) {
     skip('the broken signature', 'no event came back to check.');
@@ -1191,6 +1179,24 @@ async function test() {
     stsUrl + "/ssf, did not answer. Start the stack, or set " +
     "SSF_TRANSMITTER_URL to one that does — and note it is a BASE url, not " +
     "the WS-Trust endpoint WSTRUST_STS_URL holds.");
+  // Section 2 asks the token endpoint for `ssf.read`, which the mock issues
+  // only to a client that DECLARES it (iya-sts #110) — so the client is
+  // registered with that declaration first, or the scope sections never run.
+  const runnerFields = {
+    oauthClientId: ['ssf-protocol-runner'],
+    oauthGrantType: ['client_credentials']
+  };
+  if (await registry.registryEditable(registry.baseOf(stsUrl),
+                                      'oauthAllowedScope')) {
+    runnerFields.oauthAllowedScope = ['ssf.read'];
+  }
+  await registry.provision(registry.baseOf(stsUrl), {
+    identifier: 'ssf-protocol-runner',
+    name: 'SSF protocol test client',
+    protocols: ['oauth2'],
+    fields: runnerFields,
+    why: 'the receiver this job agrees streams as'
+  });
   await startReceiver();
   try {
     await theMetadataIsReadable();
@@ -1200,7 +1206,6 @@ async function test() {
     await theThreeStatusesBehaveDifferently();
     await theVerificationEventIsWellFormed();
     await pollingHasItsOwnRefusals();
-    await thisTestCanBeTheTransmitter();
     await theDefectsAreReachable();
   } finally {
     // The mock's configuration and this run's streams are put back whether
@@ -1213,9 +1218,9 @@ async function test() {
   skips.forEach(function (one) {
     log.warn("  skipped: " + one);
   });
-  assert.ok(checks >= 55,
+  assert.ok(checks >= 49,
       'Only ' + checks + ' checks ran and this file defines well over ' +
-      'fifty against a live transmitter. A section has stopped being ' +
+      'forty against a live transmitter. A section has stopped being ' +
       'called.');
   log.info("Test completed successfully.");
   log.debug("Leaving test().");

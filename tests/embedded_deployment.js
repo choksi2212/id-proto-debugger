@@ -289,7 +289,6 @@ function clientEnvironment() {
     oid4vciIssuerUrlDefault: STS,
     oid4vpVerifierUrlDefault: STS,
     rfc8414MetadataUrlDefault: STS + "/.well-known/oauth-authorization-server",
-    krb5SpnegoUrlDefault: STS + "/spnego/protected",
     spiffeServerAddressDefault: STS,
     spiffeBundleUrlDefault: STS + "/spiffe/bundle",
     scimBaseUrlDefault: STS + "/scim/v2",
@@ -298,6 +297,12 @@ function clientEnvironment() {
     wsfedMetadataUrlDefault: STS +
         "/FederationMetadata/2007-06/FederationMetadata.xml"
   };
+  // EMPTY rather than on the placeholder: the SPNEGO-protected page left
+  // iya-sts for its development companion (iya-sts #595), which the service
+  // that embeds this build does not include.
+  assert.strictEqual(c.krb5SpnegoUrlDefault, "",
+    "krb5SpnegoUrlDefault should be empty in the embedded build, got " +
+        JSON.stringify(c.krb5SpnegoUrlDefault));
   Object.keys(sts).forEach(function (key) {
     assert.strictEqual(c[key], sts[key],
       key + " should be " + JSON.stringify(sts[key]) + ", got " +
@@ -323,7 +328,7 @@ function clientEnvironment() {
   assert.strictEqual(bare.apiUrl, "/api",
     "with no window, apiUrl should be the bare prefix.");
   log.info("[client env] OK — the page's origin, /api and the four landings " +
-           "derived, eleven mock STS defaults on the placeholder, three " +
+           "derived, ten mock STS defaults on the placeholder, three " +
            "socket targets on localhost, and no throw without a window.");
   log.debug("Leaving clientEnvironment().");
 }

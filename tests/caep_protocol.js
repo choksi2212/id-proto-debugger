@@ -46,6 +46,7 @@
 const assert = require("assert");
 const { Command, Option } = require("commander");
 const paths = require("./module_paths.js");
+const authnSignin = require("./authn_signin.js");
 
 var appconfig = require(process.env.CONFIG_FILE);
 var bunyan = require("bunyan");
@@ -167,7 +168,7 @@ async function call(method, url, body, options) {
 function settingRow(configDocument, key) {
   log.debug("Entering settingRow(). " + key);
   const doc = configDocument || {};
-  const rows = (doc.settings || []).slice();
+  const rows = (Array.isArray(doc.settings) ? doc.settings : []).slice();
   (doc.groups || []).forEach(function (group) {
     (group.settings || []).forEach(function (one) {
       rows.push(one);
@@ -254,19 +255,26 @@ async function signIn() {
       started.status + ' and sent the browser to "' + to + '", which ' +
       'carries no `authn` — so there is no sign-in form to post.' };
   }
-  const form = 'authn_id=' + encodeURIComponent(match[1]) +
-    '&username=' + encodeURIComponent(WHO) + '&action=login';
-  const posted = await call('POST', stsUrl + '/authn/login', form, {
-    anonymous: true, redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-  const cookie = String(posted.setCookie || '');
+  // The screen is a static surface over /authn-api since iya-sts #571, so
+  // the sign-in is the page's own act, sent the way the page sends it.
+  const posted = await authnSignin.signIn(stsUrl,
+    new URL(to, stsUrl).href,
+    { action: 'login', username: WHO, password: 'x' });
+  posted.text = JSON.stringify(posted.errors || posted.json || '');
+  const cookie = posted.next === 'redirect'
+    ? posted.headers.getSetCookie().join('; ') : '';
   // The cookie is `sts_session` since iya-sts 27b81c5 (it was
   // `sts_mock_session`), and its VALUE is `<session id>.<handle>` rather than
   // the bare id: the handle is a secret the mock stores only a hash of, so a
   // session id read off an event or a list is no longer a cookie anybody can
   // present. The id is everything before the first dot — ids are base64url,
   // which has no dot — and that is what every Security Event Token names.
-  const got = /sts_session=([^;]+)/.exec(cookie);
+  // THE LAST ONE: the sign-in answer sets `sts_session` twice, the handle
+  // rotated between the two, and only the second is live. Presenting the
+  // first, /oauth2/logout found no session to end and answered "Signed out"
+  // having ended nothing — so no session-revoked was ever sent.
+  const all = Array.from(cookie.matchAll(/sts_session=([^;]+)/g));
+  const got = all.length ? all[all.length - 1] : null;
   if (!got) {
     log.debug("Leaving signIn(). No session cookie.");
     return { ok: false, why: 'The sign-in screen answered ' + posted.status +
@@ -372,6 +380,31 @@ async function poll(maxEvents) {
   }
   log.debug("Leaving poll(). " + out.length + " set(s).");
   return out;
+}
+
+// AN EMITTED EVENT REACHES THE QUEUE ASYNCHRONOUSLY: a sign-in or a sign-out
+// answers the browser before the Security Event Token about it is on the
+// stream, and so does an emit through the management API. So this polls
+// until every one of `shorts` has arrived, or the deadline passes, and
+// answers everything it collected — acknowledged, as poll() does.
+async function pollFor(shorts, timeoutMs) {
+  log.debug("Entering pollFor(). " + shorts.join(","));
+  const deadline = Date.now() + (timeoutMs || 15000);
+  let out = [];
+  for (;;) {
+    out = out.concat(await poll(50));
+    const missing = shorts.filter(function (short) {
+      return ofType(out, short).length === 0;
+    });
+    if (!missing.length || Date.now() >= deadline) {
+      log.debug("Leaving pollFor(). " + out.length + " set(s), missing " +
+                missing.join(","));
+      return out;
+    }
+    await new Promise(function (resolve) {
+      setTimeout(resolve, 250);
+    });
+  }
 }
 
 function ofType(sets, short) {
@@ -548,7 +581,7 @@ async function namingThePersonCoversTheirSessions(realSub) {
     skip('coverage by member', signed.why);
     return;
   }
-  const arrived = await poll(50);
+  const arrived = await pollFor(['session-established']);
   check('AND AN EVENT ABOUT A SESSION OF THEIRS STILL ARRIVES', function () {
     assert.ok(ofType(arrived, 'session-established').length > 0,
         'The stream now names the person EXACTLY and nothing arrived, which ' +
@@ -576,7 +609,7 @@ async function signingInEmitsAnEvent() {
     return;
   }
 
-  const afterSignIn = await poll(50);
+  const afterSignIn = await pollFor(['session-established']);
   const established = ofType(afterSignIn, 'session-established');
   // THE SUBJECT THIS SERVICE USES IS NOT THE NAME THAT WAS TYPED. Since
   // iya-sts 64580f4 (2026-09-14) it is `urn:uuid:<entryUUID>` — the person's
@@ -697,7 +730,7 @@ async function signingInEmitsAnEvent() {
   await present();
   await poll(50);
   await present();
-  const afterSso = await poll(50);
+  const afterSso = await pollFor(['session-presented']);
   check('presenting the session again put a session-presented on the stream',
       function () {
         assert.ok(ofType(afterSso, 'session-presented').length > 0,
@@ -707,7 +740,7 @@ async function signingInEmitsAnEvent() {
 
   // SIGN-OUT.
   await signOut();
-  const afterSignOut = await poll(50);
+  const afterSignOut = await pollFor(['session-revoked']);
   check('signing out put a session-revoked on the stream', function () {
     assert.ok(ofType(afterSignOut, 'session-revoked').length > 0,
         'Nothing arrived for the sign-out. ' + afterSignOut.length +
@@ -735,6 +768,11 @@ async function autoEmitOffStopsIt() {
     await setSetting('caep.autoEmit', 'true');
     return;
   }
+  // Nothing is expected, and an emission is asynchronous, so give one the
+  // time it would have taken to arrive before concluding there was none.
+  await new Promise(function (resolve) {
+    setTimeout(resolve, 3000);
+  });
   const quiet = await poll(50);
   check('signing in with emission off delivers nothing', function () {
     assert.strictEqual(ofType(quiet, 'session-established').length, 0,
@@ -787,7 +825,7 @@ async function everyEventEmittedByHand() {
         'Emitting ' + short + ' answered ' + out.status + ': ' + out.text);
   }
 
-  const arrived = await poll(50);
+  const arrived = await pollFor(shorts);
   check('every one of the eight arrived on the stream', function () {
     shorts.forEach(function (short) {
       assert.ok(ofType(arrived, short).length > 0,
@@ -857,7 +895,8 @@ async function omittingTheTimestampIsConforming() {
   const out = await call('POST', adminUrl + '/caep/emit',
       { session_id: signed.sessionId, type: 'session-revoked' }, {});
   assert.strictEqual(out.status, 200, out.text);
-  const arrived = ofType(await poll(50), 'session-revoked');
+  const arrived = ofType(await pollFor(['session-revoked']),
+      'session-revoked');
   check('the event arrives with NO event_timestamp', function () {
     assert.ok(arrived.length > 0, 'nothing arrived.');
     const payload = arrived[0].claims.events[P + 'session-revoked'];

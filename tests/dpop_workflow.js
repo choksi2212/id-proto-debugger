@@ -47,6 +47,9 @@ log.info("Log initialized. logLevel=" + log.level());
 const browserFlags = require("./browser_flags.js");
 const waitForContent = require("./wait_for.js");
 const registry = require("./sts_applications.js");
+const common = require("./jwt_vc_json_common.js");
+const consentScreen = require("./consent_screen.js");
+const { usernameFor } = require("./random_username.js");
 
 var stsUrl = process.env.WSTRUST_STS_URL || "https://localhost:8081/sts";
 const STS = process.env.OID4VCI_ISSUER_URL || stsUrl.replace(/\/sts\/?$/, "");
@@ -226,22 +229,18 @@ async function paneBeforeAnythingIsSent(driver) {
   log.debug("Leaving paneBeforeAnythingIsSent().");
 }
 
-// The mock issuer's cross-device screen carries the offer URI and the
+// A person's cross-device offer — made on their own wallet page at iya-sts
+// (`/portal/wallet`, iya-sts #589), which shows the offer URI and the
 // Transaction Code; step 1's Receive pane takes the offer; step 2 redeems it
 // with the pre-authorized code grant, which needs no identity provider.
 async function boundTokenThroughTheOfferFlow(driver) {
   log.debug("Entering boundTokenThroughTheOfferFlow().");
   log.info("=== A really bound token, through the real offer flow ===");
-  await driver.get(STS + "/issuer/offer?mode=cross-device");
-  await driver.wait(until.elementLocated(By.id("offer_uri")), 20000,
-    "the issuer's cross-device offer screen did not load");
-  var screen = await driver.executeScript(
-    "return { offerUri: " +
-        "document.getElementById('offer_uri').textContent.trim()," +
-    "         txCode: document.getElementById('tx_code')" +
-    "                 ? " +
-        "document.getElementById('tx_code').textContent.trim() : '' };");
-  check("the issuer's cross-device screen offers a credential-offer URI",
+  var screen = await common.offerFromThePortalWallet(driver, {
+    By: By, until: until, stsBase: STS, username: usernameFor("dpop-offer"),
+    mode: "cross-device", configuration: "IdentityCredential", wait: 20000,
+    consentScreen: consentScreen });
+  check("the portal's cross-device offer is a credential-offer URI",
     screen.offerUri.indexOf("openid-credential-offer://") === 0,
                             screen.offerUri.slice(0, 100));
   check("...and a Transaction Code", /^[0-9]{4,8}$/.test(screen.txCode),

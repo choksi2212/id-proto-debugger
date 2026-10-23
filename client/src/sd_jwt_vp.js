@@ -69,7 +69,11 @@ var KEYS = {
   // it is used: it builds the start links. Was read from a bare string literal
   // in vc_presentation_0.js with nothing ever writing it, so the wallet
   // fell through to guessing from the credential issuer.
-  VERIFIER_BASE_URL: "sdjwtvp_verifier_base_url"
+  VERIFIER_BASE_URL: "sdjwtvp_verifier_base_url",
+  // The Verifier's WEBSITE: the page where a person starts a verification,
+  // which the three flows on step 0 link to. Any Verifier's, not only this
+  // suite's; set on step 0.
+  VERIFIER_SITE_URL: "sdjwtvp_verifier_site_url"
 };
 
 var STEP1_URL = "/vc-presentation-1.html";

@@ -34,6 +34,7 @@ const { Builder, By, until } = require("selenium-webdriver");
 const chrome = require("selenium-webdriver/chrome");
 const { Command, Option } = require("commander");
 const browserFlags = require("./browser_flags.js");
+const kerberosPrincipals = require("./kerberos_principals.js");
 const { mustBeReady } = require("./expectation.js");
 const { usernameFor, requireKnownOrCreatable } =
     require("./random_username.js");
@@ -99,7 +100,7 @@ async function setField(driver, id, value) {
 async function kdcIsReachable() {
   log.debug("Entering kdcIsReachable().");
   try {
-    const response = await fetch(stsUrl + "/krb5/principals");
+    const response = await kerberosPrincipals.principalsDocument(stsUrl);
     if (!response.ok) {
       log.debug("Leaving kdcIsReachable().");
       return {

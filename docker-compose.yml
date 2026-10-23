@@ -91,6 +91,11 @@ services:
       # belongs on this side. `oid4vp.walletUrl` is DERIVED from this one (see
       # sts/common/config.js), so the verifier's hand-back follows.
       - OID4VCI_WALLET_URL=https://localhost:3000
+      # iya-sts appends no page to the wallet URL since #594: a web
+      # wallet whose pages are not its root names them. These are the
+      # debugger's own two.
+      - OID4VCI_WALLET_ISSUANCE_PATH=/vc-issuance-1.html
+      - OID4VP_WALLET_PRESENTATION_PATH=/vc-presentation-1.html
       # The debugger's origin, which the mock's CORS allowlist has had to be
       # told since iya-sts 2f9825f (2026-09-13) — before it every response
       # carried `Access-Control-Allow-Origin: *`. Without it every call a page
@@ -136,7 +141,11 @@ services:
       - ADMIN_API_CLIENT_SECRET=${ADMIN_API_CLIENT_SECRET:-}
     volumes:
       - ${STACK_TLS_DIR:-./generated-tls}:/etc/idptools/tls:ro
-    container_name: sts
+    # NOT `sts`: the iya-sts repository's own docker-compose.yml names its
+    # container `sts` too, a container name is machine-wide, and whichever
+    # stack started second could not create its mock. The SERVICE (and so
+    # the DNS name every URL here uses) is still `sts`.
+    container_name: id-proto-debugger-sts
     # THE TAG IS MACHINE-WIDE AND THIS IS NOT THE ONLY REPOSITORY THAT BUILDS
     # IT (2026-09-15). `sts/` is the iya-sts submodule and that repository
     # builds its own stack from the same source; both wrote `rcbj/sts`, so

@@ -82,6 +82,7 @@ const assert = require("assert");
 const { Command, Option } = require('commander');
 const browserFlags = require("./browser_flags.js");
 const registry = require("./sts_applications.js");
+const federationAdmin = require("./federation_admin.js");
 const { loadUrl } = require("./page_load.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
@@ -100,8 +101,12 @@ var baseUrl = "https://localhost:3000";
 var headless = true;
 var waitTime = appconfig.waitTime;
 
+// Pictures for docs/oauth2-oidc/, taken only when DOC_SCREENSHOT_DIR is set.
+// The prefix names the flow, and is set in test() once the flow is known.
+const docShots = require("./doc_screenshots.js");
+
 const { populateMetadata } = require("../common/tests.js")({ By, until, Select,
-       waitTime, log, assert });
+       waitTime, log, assert, snap: docShots.snap });
 
 // ---------------------------------------------------------------------------
 // The five flows. `label` is the option text on oauth2_oidc_1.html (the
@@ -414,6 +419,8 @@ async function prepareAuthorizationRequest(driver, flow, { clientId, scope }) {
   }
   await new Select(await driver.findElement(authorization_grant_type))
                    .selectByVisibleText(flow.label);
+  await docShots.snap(driver, "02-configuration",
+                      { ids: ["config_expand_button", "config_fieldset"] });
 
   // Expanded only if it is not already. Once the page has been through
   // discovery it remembers (debugger_initialized) and opens this fieldset
@@ -437,16 +444,26 @@ async function prepareAuthorizationRequest(driver, flow, { clientId, scope }) {
   await driver.findElement(By.id("redirect_uri")).sendKeys(baseUrl +
                            "/callback");
 
-  // Typing does not itself redraw the preview (it is rebuilt on change/keypress
-  // handlers that clear() + sendKeys() do not always fire), so ask for it.
-  await driver.executeScript(
-      "oauth2_oidc_1.recalculateAuthorizationRequestDescription();");
+  // Read straight off the page, with NO redraw asked for: the preview follows
+  // its fields on `input`, so it must already say what was just typed. Until
+  // 2026-10-21 it was redrawn on `keypress`, which fires before the character
+  // lands, and this read `redirect_uri=https://localhost:3000/callbac` — so
+  // the test asked the page to redraw first, and hid the bug. The last field
+  // typed is the one a lagging preview gets wrong, which is what is checked.
   const preview =
       await driver.findElement(By.id("display_authz_request_form_textarea1"))
       .getAttribute("value");
+  assert.ok(preview.indexOf("redirect_uri=" + baseUrl + "/callback&") >= 0 &&
+            preview.indexOf("scope=" + scope) >= 0 &&
+            preview.indexOf("client_id=" + clientId + "&") >= 0,
+    "The authorization request preview does not show what was just typed " +
+        "(client_id, scope, redirect_uri), so it is not following its " +
+        "fields as they change. It reads:\n" + preview);
   const nonce =
       await driver.findElement(By.id("nonce_field")).getAttribute("value");
   const state = await driver.findElement(By.id("state")).getAttribute("value");
+  await docShots.snap(driver, "03-authorization-request",
+                      { ids: ["authz_expand_button", "authz_fieldset"] });
   log.info("Leaving prepareAuthorizationRequest().");
   log.debug("Leaving prepareAuthorizationRequest().");
   return { preview: preview, nonce: nonce, state: state };
@@ -477,6 +494,20 @@ async function enableDpop(driver) {
     return !!(await driver.executeScript(
       "return window.localStorage.getItem('oauth_dpop_public_jwk');"));
   }, waitTime * 5, "No DPoP key pair appeared after switching DPoP on.");
+  // Nothing has been sent yet, so the pane must not offer a verdict. Until
+  // 2026-10-21 it did, in red: "A DPoP proof was sent, but the token came
+  // back with no cnf.jkt", with no Token Request ever made.
+  // textContent rather than getText(): the pane may be collapsed, and an
+  // invisible element's getText() is "", which would pass the second half.
+  const before = await driver.executeScript(
+      "var e = document.getElementById('dpop_status'); return e ? " +
+          "e.textContent : '';");
+  assert.ok(/No token has been requested with this key yet/.test(before) &&
+            !/came back with no cnf\.jkt/.test(before),
+    "Before any Token Request the DPoP pane should say no token has been " +
+        "requested yet. It says: \"" + before + "\".");
+  await docShots.snap(driver, "00-dpop",
+                      { ids: ["token_expand_button", "token_fieldset"] });
   const publicJwk = JSON.parse(await driver.executeScript(
     "return window.localStorage.getItem('oauth_dpop_public_jwk');"));
   const jkt = thumbprint(publicJwk);
@@ -516,7 +547,21 @@ async function signIn(driver, user) {
     await passwordFields[0].clear();
     await passwordFields[0].sendKeys(user);
   }
+  await docShots.snap(driver, "04-sign-in");
   await driver.findElement(By.id("kc-login")).click();
+  // The consent screen is photographed only on a documentation run, because
+  // finding out whether it is coming costs a wait that an ordinary run has no
+  // reason to spend: consentScreen.passInBrowser() below already decides that
+  // for itself.
+  if (docShots.enabled()) {
+    try {
+      await driver.wait(until.elementLocated(By.id("consent-allow")),
+                        waitTime * 3);
+      await docShots.snap(driver, "05-consent");
+    } catch (e) {
+      log.info("signIn(): no consent screen to photograph. " + e.message);
+    }
+  }
   // AND THE CONSENT SCREEN, if there is one. It is PASSED rather than asserted:
   // a scope already agreed to in this run, or one carried as a global consent
   // on the application's entry, draws no screen at all. What asserts the screen
@@ -706,6 +751,13 @@ async function checkPanesShowArtifacts(driver, flow, params) {
   }
   log.info("[" + flow.responseType +
            "] OK — the page shows every artifact that arrived.");
+  // A pure code flow draws this pane collapsed and empty: its code goes to
+  // the Token Request instead, which 07-token-request shows.
+  if (flow.accessToken || flow.idToken) {
+    await docShots.snap(driver, "06-authorization-response",
+                        { ids: ["authorization_endpoint_result",
+                                "authorization_endpoint_id_token_result"] });
+  }
   log.info("Leaving checkPanesShowArtifacts().");
   log.debug("Leaving checkPanesShowArtifacts().");
 }
@@ -786,6 +838,18 @@ async function exchangeCode(driver, flow, sent, expected,
   await driver.findElement(By.id("token_redirect_uri")).clear();
   await driver.findElement(By.id("token_redirect_uri")).sendKeys(baseUrl +
                            "/callback");
+  // The Token Request preview must follow the fields too. Nothing redrew it
+  // on typing until 2026-10-21, so a client id typed here was not in "the
+  // request Get Token will send" until something else redrew the pane.
+  const tokenPreview = await driver.findElement(
+      By.id("display_token_request_form_textarea1")).getAttribute("value");
+  assert.ok(tokenPreview.indexOf("redirect_uri=" + baseUrl + "/callback") >=
+                0 &&
+            tokenPreview.indexOf("client_id=" + expected.clientId) >= 0,
+    "The Token Request preview does not show the client_id and redirect_uri " +
+        "just typed. It reads:\n" + tokenPreview);
+  await docShots.snap(driver, "07-token-request",
+                      { ids: ["token_expand_button", "token_fieldset"] });
   await driver.findElement(By.className("token_btn")).click();
 
   const tokenField = By.id("token_access_token");
@@ -897,6 +961,8 @@ async function exchangeCode(driver, flow, sent, expected,
   }
   log.info("[" + flow.responseType + "] OK — the code redeemed at the token " +
            "endpoint, and both tokens verify.");
+  await docShots.snap(driver, "08-token-response",
+                      { ids: ["token_endpoint_result"] });
   log.info("Leaving exchangeCode().");
   log.debug("Leaving exchangeCode().");
 }
@@ -976,6 +1042,8 @@ async function test() {
           "\".");
     const dpopOn = dpopSetting === "on";
     const dpop = dpopExpectation(flow, dpopOn);
+    docShots.setPrefix(flowKey.replace(/_flow$/, "").replace(/_/g, "-") +
+                       (dpopOn ? "-dpop" : ""));
 
     // The metadata is read here as well as by the page, because every assertion
     // below is against what the OP itself advertises rather than against a URL
@@ -1128,6 +1196,18 @@ async function test() {
                              "input[type=\"submit\"][value=\"Authorize\"]"))
                              .click();
     await signIn(driver, user.login);
+
+    // The mock names a person by the `urn:uuid:` of their directory entry and
+    // puts no `preferred_username` beside an access token, so its tokens carry
+    // nothing a login name can be found in. The entry exists once the sign-in
+    // has, so the subject is asked for now and every artifact below is held
+    // to it exactly — Keycloak's half already arrives with OIDC_EXPECT_SUB.
+    const mockBase = registry.stsBaseFor(discovery_endpoint);
+    if (!user.sub && mockBase) {
+      user.sub = await federationAdmin.subjectOf(mockBase, user.login);
+      log.info("[subject] " + user.login + " is " + user.sub +
+               " at the mock; every token must name that subject.");
+    }
 
     const params = await checkAuthorizationResponse(driver, flow, sent,
         expected);

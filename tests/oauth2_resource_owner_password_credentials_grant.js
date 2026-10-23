@@ -18,9 +18,12 @@ var logout_post_redirect_uri_value = baseUrl + "/logout.html";
 var headless = true;
 var waitTime = appconfig.waitTime;
 
+// Pictures for docs/oauth2-oidc/, taken only when DOC_SCREENSHOT_DIR is set.
+const docShots = require("./doc_screenshots.js");
+docShots.setPrefix("oauth2-password");
 const { populateMetadata, getAccessTokenPassword, verifyAccessToken } =
        require("../common/tests.js")({ By, until, Select, waitTime, log, jwt,
-       assert });
+       assert, snap: docShots.snap });
 
 
 // Waits until the browser has come to REST on a page whose URL contains

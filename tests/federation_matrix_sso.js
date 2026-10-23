@@ -1108,6 +1108,14 @@ async function driveSamlTier(driver, spBase) {
                  { timeout: waitTime * 5 });
   await waitForPageBundle(driver);
 
+  // The version is chosen BEFORE the load, as a reader facing an identity
+  // provider that speaks both does: iya-sts's document names SAML 2.0 and
+  // SAML 1.1 under one entity since its #523, and a document naming both
+  // leaves the selection standing (and fills the endpoints for it).
+  await driver.executeScript(
+    "var s = document.getElementById('saml_version'); s.value = arguments[0];" +
+    "s.dispatchEvent(new Event('change'));",
+    APP_PROTOCOL === "saml2" ? "2.0" : "1.1");
   await setField(driver, "saml_metadata_url", metadataUrl);
   await clickByValue(driver, "Load Metadata");
   await waitForValue(driver, By.id("saml_metadata_status"),
@@ -1115,11 +1123,10 @@ async function driveSamlTier(driver, spBase) {
     "Realm 1's " + LABELS[APP_PROTOCOL] + " metadata at " + metadataUrl +
     " was not loaded and parsed by the page.");
 
-  // THE DESCRIPTOR DECIDES THE VERSION, and it is asserted rather than assumed
-  // because everything after it depends on the page having noticed: a page
-  // left on 2.0 in front of a 1.1 document builds an <AuthnRequest>, posts it
-  // at an inter-site transfer service, and reports the refusal as though the
-  // identity provider were at fault.
+  // THE VERSION IN FORCE, asserted rather than assumed because everything
+  // after it depends on it: a page left on 2.0 in front of a 1.1 relying party
+  // builds an <AuthnRequest>, posts it at an inter-site transfer service, and
+  // reports the refusal as though the identity provider were at fault.
   const version = await driver.findElement(By.id("saml_version"))
     .getAttribute("value");
   assert.strictEqual(String(version),
@@ -1373,7 +1380,8 @@ async function runTheCeremony(driver, user) {
     "Realm 2's relationship configures a passwordless security key and no " +
     "WebAuthn ceremony page appeared after the username was submitted.");
   const heading = await driver.findElement(By.css("h1")).getText();
-  assert.ok(/Enrol|security key/i.test(heading),
+  // "Create a passkey" / "Sign in with your passkey" since iya-sts #571.
+  assert.ok(/Enrol|security key|passkey/i.test(heading),
     "The page after the username is not the WebAuthn step; its heading " +
     "reads: " + heading);
 
@@ -1836,8 +1844,14 @@ async function mockRoutesWsFedThroughTheFunnel(stsBase) {
   // question about the build, not about a realm — with a wtrealm nothing has
   // ever heard of, so it configures nothing and leaves no entry behind that
   // matters.
+  // `wreply` is named because since iya-sts #592 a request with none goes to
+  // the entry's registered reply address, and this wtrealm has none — a 400
+  // that would read as a mock that does not route. Development accepts an
+  // unregistered one.
   const probe = await fetch(stsBase + "/wsfed?wa=wsignin1.0&wtrealm=" +
-                            encodeURIComponent("urn:fedmx:funnel-probe"),
+                            encodeURIComponent("urn:fedmx:funnel-probe") +
+                            "&wreply=" +
+                            encodeURIComponent("https://rp.example.com/wsfed"),
                             { redirect: "manual" });
   const location = String(probe.headers.get("location") || "");
   const routed = probe.status === 303 && location.indexOf("/authn/login") >= 0;

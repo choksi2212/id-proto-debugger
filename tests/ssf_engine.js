@@ -1477,10 +1477,10 @@ function theApiProxyRefusesWhatItShould() {
   });
   check('an {err, description} refusal is read out', function () {
     const read = proxy.readResponse(400, {},
-        '{"err":"access_denied","description":"needs ssf:write"}');
+        '{"err":"access_denied","description":"needs ssf.manage"}');
     assert.strictEqual(read.ok, false);
     assert.strictEqual(read.err, 'access_denied');
-    assert.ok(read.description.indexOf('ssf:write') >= 0);
+    assert.ok(read.description.indexOf('ssf.manage') >= 0);
   });
   check('a non-JSON error names what is in front of the transmitter',
     function () {

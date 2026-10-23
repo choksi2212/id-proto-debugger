@@ -46,6 +46,12 @@ const chrome = require("selenium-webdriver/chrome");
 const logging = require("selenium-webdriver/lib/logging");
 const assert = require("assert");
 const browserFlags = require("./browser_flags.js");
+// startVerification() and verificationResult(), iya-sts's Verifier doors.
+var vpCommon = require("./jwt_vc_json_common.js");
+// The Verifier's website (iya-sts's companion on this suite's stacks), where
+// the chooser on step 0 sends the browser.
+var companionUrl = (process.env.COMPANION_URL || "http://localhost:9700")
+    .replace(/\/+$/, "");
 const crypto = require("crypto");
 const { Command, Option } = require('commander');
 const { loadUrl } = require("./page_load.js");
@@ -362,21 +368,10 @@ function postPresentation(responseUri, state, presentation) {
 // receives.
 async function freshRequest(byReference) {
   log.debug("Entering freshRequest(). byReference=" + !!byReference);
-  var r = await fetch(issuerBase + "/oid4vp/start?format=" +
-      encodeURIComponent(FORMAT) + (byReference ? "&by=reference" : ""),
-    { redirect: "manual" });
-  var location = r.headers.get("location");
-  assert.ok(location,
-            "the verifier should redirect the wallet with its request.");
-  var query = location.slice(location.indexOf("?") + 1);
-  var params = {};
-  query.split("&").forEach(function (pair) {
-    var eq = pair.indexOf("=");
-    params[decodeURIComponent(pair.slice(0, eq))] =
-           decodeURIComponent(pair.slice(eq + 1));
-  });
-  log.debug("Leaving freshRequest(). state=" + params.state);
-  return { params: params, location: location };
+  var request = await vpCommon.startVerification(issuerBase, FORMAT,
+                                                 byReference);
+  log.debug("Leaving freshRequest(). state=" + request.params.state);
+  return { params: request.params, location: request.location };
 }
 
 // The claim names a request actually asks for, off the wire. The last element
@@ -447,12 +442,30 @@ async function pinVerifierRequest() {
 
 async function verdictFor(state) {
   log.debug("Entering verdictFor().");
-  var r = await httpJson(issuerBase + "/oid4vp/result/" +
-      encodeURIComponent(state));
+  var r = await vpCommon.verificationResult(issuerBase, state);
   assert.ok(r.ok, "the verifier should report what it decided, got HTTP " +
             r.status);
   log.debug("Leaving verdictFor().");
   return r.body;
+}
+
+// THE VERDICT ON WHAT THE PAGES JUST SENT. Step 3 shows what the Verifier
+// ANSWERED — all OID4VP gives a wallet — and the Verifier's check-by-check
+// verdict is its own record, read here where an operator reads it: the
+// management API, by the transaction's `state`, which the wallet kept with
+// the presentation it sent.
+async function verdictOfWhatWasSent(driver) {
+  log.debug("Entering verdictOfWhatWasSent().");
+  var state = await driver.executeScript(
+    "var p = JSON.parse(localStorage.getItem('sdjwtvp_presentation') || " +
+    "'{}'); return p.state || '';");
+  assert.ok(state, "step 3 holds no state for what was sent, so the " +
+            "Verifier's verdict on it cannot be looked up.");
+  var doc = await verdictFor(state);
+  assert.ok(doc.verdict, "the Verifier has recorded no verdict for state " +
+            state + ": " + JSON.stringify(doc).slice(0, 300));
+  log.debug("Leaving verdictOfWhatWasSent().");
+  return doc.verdict;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,20 +632,23 @@ async function presentThroughThePages(driver, held, byReference) {
                      cards + ".");
   log.info("[step0] " + holding);
 
-  // Choosing a flow goes to the VERIFIER: a presentation is something a
-  // verifier asks for, so the workflow starts there.
+  // Choosing a flow goes to the VERIFIER'S WEBSITE: a presentation is
+  // something a verifier asks for, so the workflow starts there — at the page
+  // step 0 is configured with (iya-sts's companion here), where the reader
+  // chooses how the request is made.
   await click(driver, By.id(byReference ?
               "vp_usecase_same-device-signed" : "vp_usecase_same-device"));
-  if (!byReference) {
-    await driver.wait(until.elementLocated(By.id("present_by_value")),
-                      fetchWait,
-      "choosing the flow should open the verifier's own web page.");
-    var verifierPage = await driver.getCurrentUrl();
-    assert.ok(verifierPage.indexOf(issuerBase) === 0,
-      "which is hosted by the verifier, got: " + verifierPage);
-    log.info("[step0] OK — the flow starts at the verifier: " + verifierPage);
-    await click(driver, By.id("present_by_value"));
-  }
+  await driver.wait(until.elementLocated(By.id("start")), fetchWait,
+    "choosing the flow should open the verifier's website.");
+  var verifierPage = await driver.getCurrentUrl();
+  assert.ok(verifierPage.indexOf(companionUrl) === 0,
+    "which is the verifier website step 0 is configured with (" +
+    companionUrl + "), got: " + verifierPage);
+  log.info("[step0] OK — the flow starts at the verifier's website: " +
+           verifierPage);
+  await vpCommon.startAtTheVerifierWebsite(driver, { By: By, until: until,
+    format: FORMAT, byReference: !!byReference, crossDevice: false,
+    wait: fetchWait });
   // As in the issuance suite: if the verifier's hand-off does not arrive, name
   // the URL the browser is actually on. The verifier builds it from
   // OID4VP_WALLET_URL (falling back to OID4VCI_WALLET_URL), and that default
@@ -855,18 +871,19 @@ async function presentThroughThePages(driver, held, byReference) {
 
   // ---- step 3: both accounts of it ---------------------------------------
   await waitForStatus(driver, "vp_verifier_status",
-    function (s) { return /ACCEPTED|REFUSED|could not be fetched/.test(s); },
-    "step 3 never reported the verifier's verdict");
-  var verdictText = await text(driver, "vp_verifier_status");
-  assert.ok(/ACCEPTED/.test(verdictText),
-    "the verifier should have accepted this presentation. Got: " + verdictText);
-  var checks = await driver.executeScript(
-    "return Array.prototype.slice.call(document.querySelectorAll('#vp_verifier_table tbody tr'))" +
-    "  .map(function (tr) {" +
-    "    var td = tr.querySelectorAll('td');" +
-    "    return { name: td[0].textContent.trim(), result: " +
-        "td[1].textContent.trim() };" +
-    "  });");
+    function (s) { return /accepted the response|refused the response/.test(
+      s); },
+    "step 3 never reported what the Verifier answered");
+  var answerText = await text(driver, "vp_verifier_status");
+  assert.ok(/accepted the response/.test(answerText),
+    "the Verifier's Response Endpoint should have accepted the response. " +
+        "Got: " + answerText);
+  var verdict = await verdictOfWhatWasSent(driver);
+  assert.ok(verdict.ok, "the Verifier should have accepted this " +
+            "presentation. Its verdict: " + JSON.stringify(verdict));
+  var checks = (verdict.checks || []).map(function (c) {
+    return { name: c.name, result: c.ok ? "OK" : "FAILED" };
+  });
   assert.ok(checks.length >= 10,
     "the verifier should report every check it made, got " + checks.length +
         ".");
@@ -891,15 +908,14 @@ async function presentThroughThePages(driver, held, byReference) {
   assert.ok(/all pass/.test(own.status),
     "the wallet's own checks on what it sent should pass too. Got: " +
         own.status);
-  var disclosedText = await text(driver, "vp_verifier_disclosed");
-  var extraText = await text(driver, "vp_verifier_extra");
-  assert.deepStrictEqual(disclosedText.split(", ").sort(),
+  assert.deepStrictEqual((verdict.disclosed || []).slice().sort(),
                          REQUESTED.slice().sort(),
     "the verifier should have received exactly the claims it asked for. Got: " +
-        disclosedText);
-  assert.ok(/^none/.test(extraText),
-    "and nothing more — no over-disclosure. Got: " + extraText);
-  var verifierClaims = JSON.parse(await text(driver, "vp_verifier_claims"));
+        JSON.stringify(verdict.disclosed));
+  assert.strictEqual((verdict.extraDisclosed || []).length, 0,
+    "and nothing more — no over-disclosure. Got: " +
+        JSON.stringify(verdict.extraDisclosed));
+  var verifierClaims = verdict.claims || {};
   REQUESTED.forEach(function (name) {
     assert.ok(name in verifierClaims, "the verifier should know " + name + ".");
   });
@@ -926,11 +942,11 @@ async function withholdARequestedClaim(driver, held) {
   log.debug("Entering withholdARequestedClaim().");
   log.info("=== NEGATIVE: withholding a claim the verifier asked for ===");
   await planCredentialIntoWallet(driver, held);
-  var request = await freshRequest();
-  // Straight to step 1 with the request, the way the verifier's redirect
-  // arrives.
-  await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" +
-    request.location.slice(request.location.indexOf("?") + 1));
+  // The request the way a person gets one: the Verifier's website, which
+  // redirects the browser to step 1 with it.
+  var request = await vpCommon.requestThroughTheVerifierWebsite(driver, {
+    By: By, until: until, siteUrl: companionUrl + "/verifier",
+    format: FORMAT, wait: fetchWait });
   await driver.wait(until.elementLocated(By.id("vp_request_status")), waitTime);
   await waitForStatus(driver, "vp_request_status",
                       function (s) { return /Request read/.test(s); },
@@ -970,21 +986,17 @@ async function withholdARequestedClaim(driver, held) {
     "a refused presentation should still open step 3 — that is where the " +
         "reason is.");
   await driver.sleep(600);
-  var verdict = await waitForStatus(driver, "vp_verifier_status",
-    function (s) { return /ACCEPTED|REFUSED/.test(s); },
-              "step 3 never reported the verdict");
-  assert.ok(/REFUSED/.test(verdict), "the verifier must refuse it. Got: " +
-            verdict);
-  assert.ok(/Requested claims/.test(verdict),
-    "and the failing check should be the one about the claims it asked " +
-        "for. Got: " + verdict);
-  var failed = await driver.executeScript(
-    "return Array.prototype.slice.call(document.querySelectorAll('#vp_verifier_table tbody tr'))" +
-    "  .filter(function (tr) { return " +
-        "tr.querySelectorAll('td')[1].textContent.trim() !== 'OK'; })" +
-    "  .map(function (tr) { var td = tr.querySelectorAll('td');" +
-    "                       return { name: td[0].textContent.trim(), detail: " +
-        "td[2].textContent.trim() }; });");
+  var answered = await waitForStatus(driver, "vp_verifier_status",
+    function (s) { return /accepted the response|refused the response/.test(
+      s); },
+    "step 3 never reported what the Verifier answered");
+  log.info("[negative] the Verifier answered: " + answered);
+  var refusedVerdict = await verdictOfWhatWasSent(driver);
+  assert.ok(!refusedVerdict.ok, "and its verdict must say so: " +
+            JSON.stringify(refusedVerdict));
+  var failed = (refusedVerdict.checks || [])
+    .filter(function (c) { return !c.ok; })
+    .map(function (c) { return { name: c.name, detail: c.detail }; });
   assert.strictEqual(failed.length, 1,
     "exactly one check should fail — everything else about the presentation " +
         "was fine: " +
@@ -1171,9 +1183,11 @@ async function refusingIsAnAnswer(driver, held) {
   log.debug("Entering refusingIsAnAnswer().");
   log.info("=== The holder refuses ===");
   await planCredentialIntoWallet(driver, held);
-  var request = await freshRequest();
-  await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" +
-    request.location.slice(request.location.indexOf("?") + 1));
+  // The request the way a person gets one: the Verifier's website, which
+  // redirects the browser to step 1 with it.
+  var request = await vpCommon.requestThroughTheVerifierWebsite(driver, {
+    By: By, until: until, siteUrl: companionUrl + "/verifier",
+    format: FORMAT, wait: fetchWait });
   await driver.wait(until.elementLocated(By.id("vp_continue_button")),
                     waitTime);
   await waitForStatus(driver, "vp_request_status",

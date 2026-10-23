@@ -53,13 +53,18 @@ var log = bunyan.createLogger({ name: "caep_page",
 log.info("Log initialized. logLevel=" + log.level());
 
 var baseUrl = "https://localhost:3000";
-// NO apiUrl, deliberately. This job's whole subject is the page reconfiguring
-// itself and a session model that lives in the browser, and the events it
-// simulates are signed and sent BY the page — the debugger acting as a
-// transmitter, which is an ordinary fetch. It needs no backend and runs
-// against a deployed static site unchanged, which is why run-report.js hands
-// it no API_URL. A variable naming an api nothing here calls is an invitation
-// to start calling one.
+// AN apiUrl ONLY WHERE THE TARGET HAS AN api, and only for one thing: a place
+// for the page's pushes to land. This job's whole subject is the page
+// reconfiguring itself and a session model that lives in the browser, and the
+// events it simulates are signed and sent BY the page — the debugger acting
+// as a transmitter, which is an ordinary fetch. They went to iya-sts's
+// `/ssf/receive` until iya-sts #593 deleted it; until
+// rcbj/id-proto-debugger#363 makes the debugger a transmitter iya-sts's
+// federation receiver can take signals from, they go to the api's own push
+// inbox. On a deployed static site there is no api, run-report.js hands no
+// API_URL, and the receiver endpoint is left empty: the page builds and signs
+// every event and says there is nowhere to send it.
+var apiUrl = process.env.API_URL || "";
 
 // The transmitter as the BROWSER must reach it, which on the containerized
 // stack is not the name this test uses and not the name the api uses — three
@@ -433,7 +438,7 @@ async function eachGrantShapeSeedsTheSession(driver) {
     idToken: idTokenOf({ iss: stsUrl, sub: 'urn:sts-mock:user:alice',
       sid: 'a-real-session-id', acr: 'urn:example:silver', amr: ['pwd'],
       preferred_username: 'alice' }),
-    tokenType: 'Bearer', scope: 'openid ssf:read ssf:write', expiresIn: 3600
+    tokenType: 'Bearer', scope: 'openid ssf.read ssf.manage', expiresIn: 3600
   });
   await click(driver, "btn_caep_seed");
   const withSid = await textOf(driver, "caep_seed_note");
@@ -490,7 +495,7 @@ async function eachGrantShapeSeedsTheSession(driver) {
   // (c) NO ID TOKEN AT ALL — two of the six grants, and not an error.
   await handOff(driver, {
     accessToken: 'opaque-access-token', idToken: '',
-    tokenType: 'Bearer', scope: 'ssf:read ssf:write', expiresIn: 3600
+    tokenType: 'Bearer', scope: 'ssf.read ssf.manage', expiresIn: 3600
   });
   await click(driver, "btn_caep_seed");
   const none = await textOf(driver, "caep_seed_note");
@@ -536,8 +541,8 @@ async function eachGrantShapeSeedsTheSession(driver) {
 // failing for their reasons and reported as a CAEP defect.
 // ---------------------------------------------------------------------------
 //
-// NEITHER ASKS FOR AN `ssf:` SCOPE, and they did until the 2026-09 bump. Since
-// iya-sts #110 `ssf:read` and `ssf:write` are that service's own PROTECTED
+// NEITHER ASKS FOR AN SSF SCOPE, and they did until the 2026-09 bump. Since
+// iya-sts #110 `ssf.read` and `ssf.manage` are that service's own PROTECTED
 // scopes, issued only to a client whose `oauthAllowedScope` declares them —
 // and `webapp1` declares neither, so asking for one was an invalid_scope 400
 // from the token endpoint, which reached this page's console as a failed
@@ -712,12 +717,12 @@ async function everyEventCanBeSimulated(driver) {
 
   await click(driver, "btn_ssf_tx_key");
   await waitForValue(driver, "ssf_tx_private_key", "signing key");
-  // The audience the mock's /ssf/receive answers to by default is its own
-  // URL (iya-sts #144 — a receiver MUST check it, RFC 8417 section 2.2), and
-  // a SET addressed anywhere else is refused as invalid_audience.
+  // Where the pushes land: the api's push inbox where there is an api (see
+  // the note on apiUrl at the top), and nowhere on a static site.
+  const receiver = apiUrl ? await openApiInbox() : "";
   await fill(driver, "ssf_tx_iss", stsUrl);
-  await fill(driver, "ssf_tx_aud", stsUrl + "/ssf/receive");
-  await fill(driver, "ssf_tx_endpoint", stsUrl + "/ssf/receive");
+  await fill(driver, "ssf_tx_aud", receiver || stsUrl);
+  await fill(driver, "ssf_tx_endpoint", receiver);
   await fill(driver, "caep_iss", stsUrl);
   await fill(driver, "caep_sub", "urn:sts-mock:user:caep-page");
   await fill(driver, "caep_sid", "caep-page-session");
@@ -941,6 +946,26 @@ async function preconditions() {
   }
   log.debug("Leaving preconditions(). Ready.");
   return { ok: true, why: "" };
+}
+
+// An RFC 8935 inbox at the api; answers the delivery URL a transmitter is
+// given. The api answers `{ ok, inbox: { id, … }, deliveryEndpoint }`.
+async function openApiInbox() {
+  log.debug("Entering openApiInbox().");
+  const made = await fetch(apiUrl + "/ssf/receiver", {
+    method: "POST",
+    headers: { "Content-Type": "application/json",
+      Accept: "application/json" },
+    body: "{}" });
+  const json = await made.json().catch(function () {
+    return null;
+  });
+  const endpoint = json ? String(json.deliveryEndpoint || "") : "";
+  assert.ok(made.status < 300 && endpoint,
+      "The api at " + apiUrl + " would not open a push inbox: " +
+      made.status + " " + JSON.stringify(json));
+  log.debug("Leaving openApiInbox().");
+  return endpoint;
 }
 
 async function cleanUp() {

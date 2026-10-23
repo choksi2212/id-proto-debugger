@@ -230,7 +230,11 @@ services:
      keycloak:
         condition: service_healthy
   sts:
-    container_name: sts
+    # NOT `sts`: the iya-sts repository's own docker-compose.yml names its
+    # container `sts` too, a container name is machine-wide, and whichever
+    # stack started second could not create its mock. The SERVICE (and so
+    # the DNS name every URL here uses) is still `sts`.
+    container_name: id-proto-debugger-sts
     hostname: sts
     # THE TAG IS MACHINE-WIDE AND THIS IS NOT THE ONLY REPOSITORY THAT BUILDS
     # IT (2026-09-15). `sts/` is the iya-sts submodule and that repository
@@ -346,6 +350,17 @@ services:
       # belongs on this side. `oid4vp.walletUrl` is DERIVED from this one (see
       # sts/common/config.js), so the verifier's hand-back follows.
       - OID4VCI_WALLET_URL=https://localhost:3000
+      # iya-sts appends no page to the wallet URL since #594: a web
+      # wallet whose pages are not its root names them. These are the
+      # debugger's own two.
+      - OID4VCI_WALLET_ISSUANCE_PATH=/vc-issuance-1.html
+      - OID4VP_WALLET_PRESENTATION_PATH=/vc-presentation-1.html
+      # ONE ACCOUNT PER BROWSER. iya-sts holds several signed-in people per
+      # browser by default since 2026-10-20 (#751), which adds an account-set
+      # cookie, an account switcher on every sign-in page and a "which
+      # account?" step to every sign-out. This suite signs one person in at a
+      # time and tests the debugger, not that switcher, so it is off.
+      - STS_AUTHN_MULTIPLE_ACCOUNTS=false
       # ---------------------------------------------------------------------
       # THE STACK'S ANCHOR, IN THE MOCK'S TRUSTSTORE, AND IT IS NOT SYMMETRY.
       #
@@ -391,6 +406,33 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  # IYA-STS'S DEVELOPMENT COMPANION (iya-sts #594, #595): the issuer's and the
+  # Verifier's websites the VC workflows start at, and the SPNEGO-protected
+  # page and Kerberos TCP service the Kerberos jobs present tickets to. It is
+  # built from the submodule's own directory and reaches iya-sts through
+  # /admin-api, registering itself with the management API secret this run
+  # pins. Host networking, like everything here, so it is
+  # http://localhost:9700 — which is every job's and client/src/env/local.js's
+  # default — and its Kerberos service principal is HTTP/localhost.
+  companion:
+    container_name: id-proto-debugger-companion
+    image: rcbj/companion
+    build:
+      context: ./sts/companion
+    network_mode: "host"
+    environment:
+      - COMPANION_PORT=9700
+      - COMPANION_PUBLIC_URL=http://localhost:9700
+      - COMPANION_STS_URL=https://localhost:8081
+      - COMPANION_STS_PUBLIC_URL=https://localhost:8081
+      - COMPANION_STS_CA_FILE=/etc/idptools/tls/stack-tls-cert.pem
+      - COMPANION_BOOTSTRAP_SECRET=${ADMIN_API_CLIENT_SECRET:-}
+      - COMPANION_WALLET_URL=https://localhost:3000/vc-issuance-1.html
+      - COMPANION_KRB5_SERVICE_PORT=8888
+      - COMPANION_LOG_LEVEL=info
+    volumes:
+      - ${STACK_TLS_DIR:-./generated-tls}:/etc/idptools/tls:ro
+
   # WS-Federation IdP side-car (Keycloak 8.0.1 + cloudtrust keycloak-wsfed). Host
   # networking, so it uses a WildFly port-offset of 2 (HTTP -> 8082) to avoid
   # colliding with the 26.x Keycloak (8080) and the STS (8081). configureKeycloakWsfed

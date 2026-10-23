@@ -1,0 +1,112 @@
+---
+# Only the main Sass file needs front matter (the dashes are enough)
+---
+
+// primer's stylesheet, then the header and sidebar of
+// _layouts/default.html on top of it.
+@import "{{ site.theme }}";
+
+$sidebar-width: 270px;
+$border: #e1e4e8;
+$muted: #586069;
+$text: #24292e;
+$link: #0366d6;
+
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid $border;
+}
+.site-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: $text;
+  &:hover { text-decoration: none; }
+}
+.site-tagline { color: $muted; font-size: 0.875rem; }
+
+.site-body {
+  display: flex;
+  align-items: flex-start;
+}
+
+.sidebar {
+  flex: 0 0 $sidebar-width;
+  width: $sidebar-width;
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 24px 12px 32px;
+  border-right: 1px solid $border;
+  font-size: 0.875rem;
+  background: #fff;
+
+  ul { list-style: none; margin: 0 0 16px 0; padding: 0; }
+  ul.sidebar-children {
+    margin: 0 0 4px 12px;
+    padding-left: 4px;
+    border-left: 1px solid $border;
+  }
+  li { margin: 0; }
+  a {
+    display: block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    color: $text;
+    line-height: 1.35;
+    &:hover { background: #f6f8fa; text-decoration: none; }
+    &.current {
+      background: #f1f8ff;
+      color: $link;
+      font-weight: 600;
+    }
+  }
+}
+
+.sidebar-heading {
+  margin: 0 0 4px 0;
+  padding: 0 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: $muted;
+}
+
+.site-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+// Wide tables scroll inside the page rather than widening it.
+.site-content table {
+  display: block;
+  overflow-x: auto;
+}
+
+.sidebar-trigger { display: none; }
+.sidebar-button {
+  display: none;
+  cursor: pointer;
+  color: $text;
+  line-height: 0;
+}
+
+@media (max-width: 800px) {
+  .site-body { display: block; }
+  .sidebar-button { display: inline-block; }
+  .sidebar {
+    display: none;
+    position: static;
+    width: auto;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid $border;
+  }
+  .sidebar-trigger:checked + .sidebar { display: block; }
+}

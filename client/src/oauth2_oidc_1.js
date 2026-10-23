@@ -1136,16 +1136,16 @@ function onload() {
   $("#password-form-group1").hide();
   $("#password-form-group2").hide();
 
-  $("#authorization_endpoint").on("keypress",
-    recalculateAuthorizationRequestDescription);
-  $("#state").on("keypress", recalculateAuthorizationRequestDescription);
-  $("#nonce_field").on("keypress", recalculateAuthorizationRequestDescription);
-  $("#response_type").on("keypress",
-    recalculateAuthorizationRequestDescription);
-  $("#client_id").on("keypress", recalculateAuthorizationRequestDescription);
-  $("#redirect_uri").on("keypress", recalculateAuthorizationRequestDescription);
-  $("#scope").on("keypress", recalculateAuthorizationRequestDescription);
-  $("#resource").on("keypress", recalculateAuthorizationRequestDescription);
+  // The request preview follows the fields on `input`, which fires AFTER the
+  // value has changed and for every way it can change — a keystroke, a
+  // paste, a cut, a delete, autofill. It was `keypress` until 2026-10-21,
+  // which fires BEFORE the character lands (so the preview was always one
+  // keystroke behind: `scope=openid profil`) and not at all for Backspace or
+  // a paste. `change` stays beside it for anything that sets a value and
+  // fires that alone.
+  $("#authorization_endpoint, #state, #nonce_field, #response_type, " +
+    "#client_id, #redirect_uri, #scope, #resource")
+    .on("input change", recalculateAuthorizationRequestDescription);
   $("#yesResourceCheck").on("click",
     recalculateAuthorizationRequestDescription);
   $("#noResourceCheck").on("click", recalculateAuthorizationRequestDescription);
@@ -2493,9 +2493,10 @@ function generateCustomParametersListUI()
         i).val(localStorage.getItem("customParameterName-" + i));
       $("#customParameterValue-" +
         i).val(localStorage.getItem("customParameterValue-" + i));
-      $("#customParameterName-" + i).on("keypress",
+      // `input`, not `keypress`: see onload().
+      $("#customParameterName-" + i).on("input change",
         recalculateAuthorizationRequestDescription);
-      $("#customParameterValue-" + i).on("keypress",
+      $("#customParameterValue-" + i).on("input change",
         recalculateAuthorizationRequestDescription);
     }
   }

@@ -200,6 +200,12 @@ This is a nuclear option to cleanup docker. You may not want to do this if you h
 On other systems, the commands needed to start the debugger in a local docker container will be similar. The docker Sinatra/Ruby runtime will have to be able to establish connections to remote IdP endpoint (whether locally in other docker containers, on the host VM, or over the network/internet). On the test system, it was necessary to add "--net=host" to the "docker run" args. The network connectivity details for docker may vary from platform-to-platform.
 
 ### Running
+**Step-by-step guides with screenshots** for every OAuth2 grant and OIDC flow
+are in [docs/oauth2-oidc](docs/oauth2-oidc/index.md):
+[OAuth 2.0 authorization grants](docs/oauth2-oidc/oauth2-grants.md) and
+[OpenID Connect authentication flows](docs/oauth2-oidc/oidc-flows.md). The
+summary below is the short version.
+
 * Open your favorite browser and enter "https://localhost:3000" in the address bar.
 * Choose the OAuth2 Grant or OIDC Flow that you want to test.
 * Enter the Authorization Endpoint.
@@ -1368,43 +1374,3 @@ Thanks to the following:
 * [Walt.ID](https://github.com/walt-id/waltid-identity)
 * [KeyCloak](https://github.com/keycloak/keycloak)
 * [KeyCloak WS-Federation Support](https://github.com/cloudtrust/keycloak-wsfed)
- 
-
-# Flows
-## OAuth2 Client Credentials Grant
-1. Open https://localhost:3000
-2. Expand "Metadata Retrieval", enter the "Metadata Endpoint URL" and click "Retrieve"
-![alt text](docs/images/image-10.png)
-3. Scroll down to end of Discovery Endpoint Information table and click "Populate Meta Data"
-![alt text](docs/images/image-3.png)
-4. Expand "Configuration Parameters" and from "Authorization Grant" select "OAuth2 Client Credential"
-![alt text](docs/images/image-4.png)
-5. In "Exchange Authorization Code for Access Token", enter "Client ID", "Client Secret" and "Scope", then click "Get Token"
-![alt text](docs/images/image-6.png)
-6. If successful, the debugger will return "Access token". You can view additional information for the access token if you click on the "Access token" link
-![alt text](docs/images/image-8.png)
-![alt text](docs/images/image-9.png)
-
-## OIDC Authorization Code Flow
-1. Open https://localhost:3000
-2. Expand "Metadata Retrieval", enter the "Metadata Endpoint URL" and click "Retrieve"
-![alt text](docs/images/image-10.png)
-3. Scroll down to end of Discovery Endpoint Information table and click "Populate Meta Data"
-![alt text](docs/images/image-3.png)
-4. Expand "Configuration Parameters" and from "Authorization Grant" select "OIDC Authorization Code Flow(code)"
-![alt text](docs/images/image-11.png)
-5. Optionally, you can modify the following variables:
-- Display OIDC Related Artifacts?
-- SSL Certificate Validation
-- Use Refresh Token
-- Use PKCE
-![alt text](docs/images/image-12.png)
-6. In "Request Authorization Code", enter "Client ID" and "Scope", then click "Authorize"
-![alt text](docs/images/image-13.png)
-7. In the newly opened tab from the identity provider, enter "Username" and "Password", then click "Sign In"
-![alt text](docs/images/image-14.png)
-8. On successful login, you will be redirected back to the debugger page
-9. In "Exchange Authorization Code for Access Token", enter "Client ID", "Client Secret" (only if client is confidential) and "Scope", then click "Get Token"
-![alt text](docs/images/image-6.png)
-10. If successful, the debugger will return "Access token", "Refresh Token" and optionally "ID Token". You can view additional information for each of the tokens if you click on their links (1). You can also introspect the access and refresh token using the identity provider introspection endpoint (2). For ID tokens, you can also decode their userinfo data (3)
-![alt text](docs/images/image-15.png)

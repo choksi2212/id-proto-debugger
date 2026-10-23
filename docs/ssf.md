@@ -676,19 +676,21 @@ about an authorization server", and for the SCIM page that is exactly true. It
 is **not** true of the scope. A workflow knows perfectly well what permission
 its own endpoints require, and it is the only party in the transaction that
 does — so `start()` takes an optional `scope`, this workflow passes
-`openid ssf:read ssf:write`, and both OAuth2 / OIDC pages fill it in.
+`openid ssf.read ssf.manage`, and both OAuth2 / OIDC pages fill it in.
 
 **There is no way to discover those names.** SSF 1.0 section 8 protects the
 stream management, status, subject, verification and poll endpoints and has the
 transmitter publish `authorization_schemes` — but each entry carries `spec_urn`
 and nothing else. So a receiver can learn *"this transmitter takes an OAuth 2.0
 bearer token"* and cannot learn what that token has to say, and the
-specification defines no scope names to guess at. `ssf:read` and `ssf:write`
-are this stack's mock's (configurable there as `ssf.authScopeRead` /
-`ssf.authScopeWrite`, and advertised in its `scopes_supported`), and they are
-two different permissions rather than a pair: read gets a stream, its status
-and its poll queue; write creates, updates and deletes one, adds and removes
-subjects, and triggers a verification event. `openid` is not the transmitter's
+specification defines no scope names to guess at. `ssf.read` and `ssf.manage`
+are the OpenID CAEP Interoperability Profile's names and this stack's mock's
+(configurable there as `ssf.authScopeRead` / `ssf.authScopeWrite`, and
+advertised in its `scopes_supported`; until 2026-10 they were `ssf:read` and
+`ssf:write`, which that service now grants nothing). Read gets a stream, its
+status and its poll queue; manage creates, updates and deletes one, adds and
+removes subjects, and triggers a verification event — and **manage includes
+read**, as the profile requires. `openid` is not the transmitter's
 business at all — it is how the **ID Token** above is asked for. **Since
 iya-sts #110 the mock issues either only to a client that DECLARES it**
 (`oauthAllowedScope` on the application's entry), so a hand-off through a
@@ -708,7 +710,7 @@ exchange is a request for a different token entirely.
 **It is a merge, not a replacement, and it stays editable.** `mergeScope()` in
 `token_handoff.js` keeps what the reader already had and appends what is new,
 without duplicates — so `openid profile` becomes
-`openid profile ssf:read ssf:write`, running the hand-off twice changes
+`openid profile ssf.read ssf.manage`, running the hand-off twice changes
 nothing, and a transmitter that names its permissions differently is a text
 field away rather than a defect. The banner on each page says which scopes were
 added and what the field now reads, because a field that changes under a reader
@@ -746,7 +748,7 @@ has to say why.
 | `tests/ssf_engine.js` | nothing | Every rule, against the specifications' own text. All eight subject formats and every refusal, the SET envelope signed with every algorithm family including the post-quantum ones, stream configurations, both deliveries, the vocabulary table, the two histories, and every bound on the api's two modules. Never skips. |
 | `tests/ssf_protocol.js` | a transmitter | One grammar against another over the wire. The whole stream lifecycle, every subject format the mock's own reader accepts, what a pause keeps that a disable drops, poll and push end to end — it hosts an RFC 8935 listener of its own — and both deliberate defects. |
 | `tests/api_ssf.js` | the api | The wiring: the body parser for `application/secevent+jwt` (without which every push reads as an empty body), the three outcomes as HTTP statuses, the address policy still covering this endpoint, and the push receiver. |
-| `tests/ssf_page.js` | a browser | That the bundle ran at all, the `callPath` row, both histories, the extended hand-off, the `ssf-` classes, a clean console — and, since 2026-09-01, the pane collapse, where `baseUrl` came from, and that the hand-off asks for `ssf:read` and `ssf:write` in both pages' scope fields without losing the reader's own. |
+| `tests/ssf_page.js` | a browser | That the bundle ran at all, the `callPath` row, both histories, the extended hand-off, the `ssf-` classes, a clean console — and, since 2026-09-01, the pane collapse, where `baseUrl` came from, and that the hand-off asks for `ssf.read` and `ssf.manage` in both pages' scope fields without losing the reader's own. |
 
 **The page's chrome is asserted rather than eyeballed**, and the two sections
 that do it are worth knowing about because every one of their failures is

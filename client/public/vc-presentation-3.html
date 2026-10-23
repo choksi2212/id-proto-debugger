@@ -118,40 +118,18 @@ function vpSetAllPanes(expand) {
   </fieldset>
 </div>
 
-<!-- ============ Pane 3: the verifier's verdict ============ -->
+<!-- ============ Pane 3: what the verifier answered ============ -->
 <div class="step0 dbg-pane" id="pane_verifier">
-  <legend class="dbg-legend" id="verifier_expand_button" onclick="return vcpresentation3.togglePane('verifier_fieldset');">What The Verifier Decided</legend>
+  <legend class="dbg-legend" id="verifier_expand_button" onclick="return vcpresentation3.togglePane('verifier_fieldset');">What The Verifier Answered</legend>
   <fieldset name="verifier_fieldset" id="verifier_fieldset" style="display: block;">
-    <p class="vc-note">The verifier&rsquo;s own verdict, check by check. Reading it back like this is not part of
-    OID4VP &mdash; a real verifier shows the End-User its own page &mdash; but a debugger needs to see which rule
-    was broken, not just that something was.</p>
+    <p class="vc-note">The Verifier&rsquo;s answer to the presentation, which is all OID4VP gives a wallet:
+    200 and, optionally, a <code>redirect_uri</code> to send the browser to (section 8.2). Which of its checks
+    passed is the Verifier&rsquo;s own record; the wallet&rsquo;s re-check above is the half a wallet can see.</p>
     <div class="vc-status" id="vp_verifier_status">&nbsp;</div>
-    <table class="vc-table" id="vp_verifier_table"><tbody></tbody></table>
     <table class="vc-token-table">
       <tbody>
         <tr>
-          <td><div class="tooltip"><label>It asked for</label><span class="tooltiptext">The claims in its DCQL query.</span></div></td>
-          <td><code id="vp_verifier_requested">&mdash;</code></td>
-        </tr>
-        <tr>
-          <td><div class="tooltip"><label>It received</label><span class="tooltiptext">The Disclosures the wallet actually sent.</span></div></td>
-          <td><code id="vp_verifier_disclosed">&mdash;</code></td>
-        </tr>
-        <tr>
-          <td><div class="tooltip"><label>Over-disclosure</label><span class="tooltiptext">Claims it did not ask for and got anyway. No verifier will complain about this, which is exactly why the wallet has to care.</span></div></td>
-          <td><code id="vp_verifier_extra">&mdash;</code></td>
-        </tr>
-        <tr>
-          <td><div class="tooltip"><label>What it now knows</label><span class="tooltiptext">The claim set the verifier ended up with.</span></div></td>
-          <td><pre class="vc-json" id="vp_verifier_claims">&nbsp;</pre></td>
-        </tr>
-        <tr>
-          <td>
-            <div class="tooltip">
-              <input class="btn2" id="vp_refresh_verdict_button" type="button" value="Ask again" onclick="return vcpresentation3.fetchVerdict();" />
-              <span class="tooltiptext">Fetch the verifier's verdict again.</span>
-            </div>
-          </td>
+          <td><div class="tooltip"><label>Its answer</label><span class="tooltiptext">The body the Response Endpoint answered the wallet's direct_post with.</span></div></td>
           <td><pre class="vc-json" id="vp_verifier_raw">&nbsp;</pre></td>
         </tr>
       </tbody>

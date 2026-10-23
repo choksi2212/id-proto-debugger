@@ -98,6 +98,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { Command, Option } = require("commander");
 const { usernameFor } = require("./random_username.js");
+const kerberosPrincipals = require("./kerberos_principals.js");
 const registry = require("./sts_applications.js");
 const { declineToRun, mustBeReady } = require("./expectation.js");
 var appconfig = require(process.env.CONFIG_FILE);
@@ -111,6 +112,12 @@ log.info("Log initialized. logLevel=" + log.level());
 // this process is the client. Not the browser's view: there is no browser in
 // this file at all.
 var stsUrl = (process.env.STS_URL || "https://localhost:8081")
+    .replace(/\/+$/, "");
+// The SPNEGO-protected page is iya-sts's COMPANION since iya-sts #595: a
+// Kerberos service with its own principal (HTTP/<its host>) and keytab, accepted
+// by MIT's own GSS-API. Its `/spnego?format=json` is what makes it provision
+// that keytab, so it is asked first.
+var companionUrl = (process.env.COMPANION_URL || "http://localhost:9700")
     .replace(/\/+$/, "");
 // THE KDC AS THIS PROCESS DIALS IT, AND ITS OWN VARIABLE RATHER THAN THE ONE
 // EVERY OTHER KERBEROS JOB CARRIES — the same split SPIFFE_TEST_* draws
@@ -559,7 +566,7 @@ async function preconditions() {
 
   let table;
   try {
-    const response = await fetch(stsUrl + "/krb5/principals");
+    const response = await kerberosPrincipals.principalsDocument(stsUrl);
     if (!response.ok) {
       log.debug("Leaving preconditions(). No KDC view.");
       return { ok: false, why: stsUrl + "/krb5/principals answered " +
@@ -914,11 +921,17 @@ function theChallengeIsBare() {
 // ---------------------------------------------------------------------------
 function theProtectedPageAcceptsARealTicket() {
   log.debug("Entering theProtectedPageAcceptsARealTicket().");
-  log.info("=== SPNEGO at /spnego/protected, with MIT's own GSSAPI ===");
+  log.info("=== SPNEGO at the companion's /spnego/protected, with MIT's " +
+      "own GSSAPI ===");
+  const ready = curl([companionUrl + "/spnego?format=json"]);
+  assert.strictEqual(ready.httpStatus, 200,
+    "iya-sts's companion at " + companionUrl + " has no service key yet " +
+    "(/spnego answered " + ready.httpStatus + "): " +
+    String(ready.body || "").slice(0, 300));
   const result = curl(["--negotiate", "-u", ":",
-      stsUrl + "/spnego/protected"]);
+      companionUrl + "/spnego/protected"]);
   assert.strictEqual(result.httpStatus, 200,
-    "`curl --negotiate` could not authenticate to " + stsUrl +
+    "`curl --negotiate` could not authenticate to " + companionUrl +
     "/spnego/protected. This is a REAL GSSAPI client and nothing in this " +
     "project wrote a byte of what it sent, which is what makes this the only " +
     "assertion here that can find an interoperability defect.\n\n" +
@@ -935,11 +948,18 @@ function theProtectedPageAcceptsARealTicket() {
     "and the page must name the principal from INSIDE the ticket, which is " +
     "the only evidence the AP-REQ was decrypted rather than merely parsed. " +
     "Body: " + result.body.replace(/\s+/g, " ").slice(0, 400));
-  assert.strictEqual(headerValues(result.headers, "Set-Cookie").length, 0,
+  // The companion keeps a browser session of its own (`companion_sid`), which
+  // is its demonstration bookkeeping and signs nobody in to anything; what
+  // must not appear is a SIGN-ON session — iya-sts's `sts_session`.
+  const signOn = headerValues(result.headers, "Set-Cookie")
+      .filter(function (one) {
+        return !/^\s*companion_sid=/i.test(one);
+      });
+  assert.strictEqual(signOn.length, 0,
     "and the PROTECTED PAGE must mint no session — it authenticates and then " +
     "throws the identity away, which is the whole difference between it and " +
     "the sign-in door in section 9. A Set-Cookie here would mean the two " +
-    "doors had become one.");
+    "doors had become one: " + JSON.stringify(signOn));
   log.info("MIT's GSSAPI authenticated to the protected page, which named " +
       "the principal and set no session");
   log.debug("Leaving theProtectedPageAcceptsARealTicket().");
@@ -955,7 +975,10 @@ async function theTicketSignsThePersonIn() {
   assert.strictEqual(result.httpStatus, 200,
     "`curl --negotiate` could not sign in at " + stsUrl + "/authn/spnego: " +
     result.headers.slice(0, 400));
-  assert.ok(/you are signed in/i.test(result.body),
+  // The page is the sign-in surface's shell since iya-sts #575, drawn in the
+  // browser from the state it carries; curl runs no script, so it reads that.
+  const view = kerberosPrincipals.spnegoDoorView(result.body) || {};
+  assert.strictEqual(view.kind, "signed-in",
     "the door's answer must be the sign-in page rather than the protected " +
     "page's table: " + result.body.replace(/\s+/g, " ").slice(0, 400));
   // The person is the principal with its realm STRIPPED, so that somebody
@@ -965,11 +988,11 @@ async function theTicketSignsThePersonIn() {
   // longer `urn:sts-mock:user:alice` — so it is asked of the directory and
   // compared, which is the same claim: one entry, one `sub` to every relying
   // party, whichever door was used.
-  assert.ok(/Signed in as <strong>alice<\/strong>/.test(result.body),
+  assert.strictEqual(view.username, "alice",
     "and it must name the person the session carries — the principal with " +
-    "its realm STRIPPED: " + result.body.replace(/\s+/g, " ").slice(0, 400));
+    "its realm STRIPPED: " + JSON.stringify(view));
   const subject = await subjectOf("alice");
-  assert.ok(result.body.indexOf(subject) >= 0,
+  assert.strictEqual(view.subject, subject,
     "and it must name the subject the directory holds for alice (" +
     subject + "), so that the password screen and the ticket are ONE " +
     "subject to every relying party: " +
@@ -1189,7 +1212,7 @@ async function theClosedDoorSignsNobodyIn() {
     // promises: turning the sign-in off takes the SESSION away and nothing
     // else. A reader told that should be able to rely on it.
     const still = curl(["--negotiate", "-u", ":",
-        stsUrl + "/spnego/protected"]);
+        companionUrl + "/spnego/protected"]);
     assert.strictEqual(still.httpStatus, 200,
       "with the sign-in door closed, /spnego/protected must still perform " +
       "the whole handshake — that is what the refusal page tells the reader, " +

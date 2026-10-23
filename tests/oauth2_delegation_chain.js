@@ -56,10 +56,13 @@
 // other pane in this workflow with four fields that all look alike.
 //
 // **THE FOUR APPLICATIONS ARE PROVISIONED FIRST, THROUGH THE MANAGEMENT API,
-// AND EACH DOWNSTREAM ONE REGISTERS AN AUDIENCE.** This service accepts a
-// client_id it has never heard of — that is the whole reason the first version
-// of this test needed no provisioning — so an entry appears only when something
-// is ACCEPTED, and it appears knowing nothing but the identifier. Here the four
+// AND EACH DOWNSTREAM ONE REGISTERS AN AUDIENCE.** In DEVELOPMENT mode this
+// service accepts a client_id it has never heard of — that is the whole reason
+// the first version of this test needed no provisioning — so an entry appears
+// only when something is ACCEPTED, and it appears knowing nothing but the
+// identifier. In PRODUCT mode an unknown client_id is refused outright, and
+// the provisioning below is what makes the chain possible at all rather than
+// what makes it describable (see THE TWO MODES, below). Either way the four
 // are created before the browser starts, each declared for `oauth2` and `oidc`
 // and each named for the tier it is, and the three that a token can be
 // ADDRESSED to register the URI it is addressed BY on `oauthAudience`:
@@ -112,8 +115,10 @@
 // picture stays one chain, and the attribute is READ rather than merely
 // declared — which is what the assertions below check: the act's target is
 // `esb1`, the token's `aud` is the URI, and the row says which audience
-// resolved. Nothing is REFUSED by any of this: an audience nobody registered is
-// still exchanged for, and recorded verbatim.
+// resolved. In development nothing is REFUSED by any of this: an audience
+// nobody registered is still exchanged for, and recorded verbatim. In product
+// an unregistered target is `invalid_target`, which is one more reason the
+// registry has to be right before the first hop.
 //
 // **IMPERSONATION, NOT DELEGATION, and the difference is visible in the
 // register.** No actor token is sent, so what comes back names bob_end_user and
@@ -127,16 +132,46 @@
 // this one, and the assertions below name the mode so that a switch flipped by
 // accident fails here rather than quietly changing what the map shows.
 //
-// **THE MOCK STS, AND ITS PERMISSIVE (default) REALM.** Three clients that need
-// no registration, a user with no password, and a token endpoint that will
-// exchange anything for anything: the mock says so itself in every row it
-// records (`authorizedBy: 'nothing. RFC 8693 leaves the policy to the
-// authorization server and this one has none'`). Keycloak would need three
-// clients, a user and a token-exchange permission per pair provisioned before
-// any of this ran. The RFC 9700 realm would be a different test again — a
-// compliant server has opinions about a public client, about PKCE and about a
-// scope that grows — and pointing this file at one is deliberately not
-// supported: it is gated on WSTRUST_STS_URL, the permissive instance.
+// **THE TWO MODES OF iya-sts, AND THE SERVICE SAYS WHICH ONE IT IS IN.** The
+// job runs against that service only (it is gated on WSTRUST_STS_URL), and
+// asks it — `GET /admin-api/mode`, the same answer the console's mode page
+// draws — rather than reading a flag of its own, because a flag set beside a
+// run is a second statement of a fact the service already publishes, and the
+// two drift the day somebody switches a realm. Keycloak would need the same
+// provisioning as product mode and is not a target.
+//
+//   DEVELOPMENT. Clients that need no secret, a person whose password is not
+//   checked, and a token endpoint that exchanges anything for anything: the
+//   delegation policy is ASKED and its answer RECORDED on the act ("WOULD
+//   HAVE BEEN REFUSED in product: …") but the token is issued regardless.
+//   The provisioning below is then about DESCRIBING the chain — what the
+//   register files each act against — and everything else is left as it
+//   always was.
+//
+//   PRODUCT. Every one of those becomes a refusal, so the provisioning step
+//   grows into the configuration a deployment would actually hold, and only
+//   in that mode:
+//     * bob_end_user is a directory entry with a password, which the sign-in
+//       screen VERIFIES (DELEGATION_USER_PASSWORD, or one generated per run);
+//     * webapp1 is a PUBLIC client (`none`), so PKCE is required of it, with
+//       the debugger's callback REGISTERED, the code and refresh grants, and
+//       the base scopes DECLARED on `oauthAllowedScope`;
+//     * apigw1 and esb1 are CONFIDENTIAL — the token-exchange grant is not a
+//       public client's — each with a secret generated for this run, which
+//       the exchange pane sends; sp1 holds one too, because introspection
+//       authenticates its caller in product;
+//     * all four list the debugger's origin on `appCorsOrigin`, since every
+//       call here is made browser-direct;
+//     * and THE DELEGATION POLICY IS SATISFIED RATHER THAN SWITCHED OFF.
+//       Each middle tier may IMPERSONATE (`appDelegationSemantics`), does so
+//       when the request names no semantics (`appDefaultDelegationSemantics`
+//       — the pane sends none), and may reach the tier after it
+//       (`appAllowedToDelegateTo`): apigw1 → esb1, esb1 → sp1. That is rule
+//       10 of the policy for an impersonation — "the actor must reach R" —
+//       and nothing wider: apigw1 is NOT allowed to reach sp1.
+//   What is asserted does not weaken in product. Where the mode changes an
+//   answer — the act's `authorizedBy` names the rule that ALLOWED it rather
+//   than what would have refused it — the product answer is asserted.
 //
 // ---------------------------------------------------------------------------
 // WHAT IT ASSERTS, IN FOUR LAYERS, BECAUSE ANY ONE OF THEM PASSES ALONE.
@@ -171,8 +206,14 @@
 //      INTERMEDIARY of the second.** Two boxes there would mean two pictures.
 //
 // Deltas, not totals. The mock's stores survive between jobs and the suite runs
-// in a pool, so the newest sequence number is read before the browser starts
+// in a pool, so the time of the newest act is read before the browser starts
 // and every assertion below is about acts after it. See `tests/CLAUDE.md`.
+// TIME and not the act's `seq`, which is what this read until it met a
+// service running request workers: `seq` is a counter per PROCESS there
+// (iya-sts common/delegation.js says so), two workers each number their own
+// acts from 1, and "after the newest seq" then excluded this job's acts
+// altogether. The register sorts its merged rows by time for the same
+// reason — time is the one ordering every process shares.
 //
 // THE FOUR ENTRIES ARE LEFT BEHIND, and that is deliberate rather than a
 // missing teardown. They are what the delegation map is a picture OF — a box
@@ -206,25 +247,42 @@
 // job the drawings are SKIPPED with a message naming the gate; the assertions
 // above do not depend on them, because they read `/admin-api/delegation`, which
 // is not behind it.
+//
+// THAT IS THE SERVER-DRAWN CONSOLE. Since iya-sts #446 `/admin` is a static
+// application drawing every page from `/admin-api`, and against it the job
+// reads what it can reach there instead — the lineage drawing, and the graphs
+// of the maps as JSON — and says which drawings it could not; see
+// consoleIsStatic() and saveStaticDrawings().
 // ---------------------------------------------------------------------------
 const { Builder, By, until, logging } = require("selenium-webdriver");
 const { Select } = require("selenium-webdriver/lib/select");
 const chrome = require("selenium-webdriver/chrome");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const assert = require("assert");
 const { Command, Option } = require("commander");
 const browserFlags = require("./browser_flags.js");
 const waitFor = require("./wait_for.js");
 const common = require("./jwt_vc_json_common.js");
-// THE SHARED REGISTRY MODULE, FOR THE PERMISSION HALF ONLY. The four
-// applications above are still created by this file's own code — the note at
-// provisionApplication() says why, and the reason has not changed: the
+// THE MANAGEMENT API'S ACCESS TOKEN, FOR A RUN THAT DID NOT PRELOAD IT.
+// run-report.js starts every job with `--require tools/attach-admin-token.js`;
+// a hand run (`node oauth2_delegation_chain.js -u …` with STS_ADMIN_API_TOKEN
+// exported) does not, and would then meet a 401 on its first /admin-api call
+// naming no token. Requiring it here is a no-op after the preload — one file,
+// one module cache entry — and a no-op with no token at all, which is the
+// ungated service that file describes.
+require("./tools/attach-admin-token.js");
+// THE SHARED REGISTRY MODULE, FOR EVERYTHING BUT THE FOUR ENTRIES' CREATION.
+// The four applications above are still created by this file's own code — the
+// note at provisionApplication() says why, and the reason has not changed: the
 // assertion that matters most here is an ABSENCE, and `provision()` checks
-// containment. A DELEGATED PERMISSION has no such wrinkle, so writing a second
-// copy of `delegate()` here would be exactly the fourth hand-written copy that
-// module exists to stop.
+// containment. A DELEGATED PERMISSION has no such wrinkle, and neither do the
+// attributes a product service needs added to those entries afterwards, nor
+// the person with a password, nor the mode — so writing a second copy of
+// `delegate()`, `provision()`, `ensurePerson()` or `isProduct()` here would be
+// exactly the hand-written copy that module exists to stop.
 const registry = require("./sts_applications.js");
 const { loadUrl } = require("./page_load.js");
 var appconfig = require(process.env.CONFIG_FILE);
@@ -255,9 +313,36 @@ const { populateMetadata } = require("../common/tests.js")({ By, until, Select,
 //
 // Deliberately NOT process.env.USER for the person: every shell sets that, so a
 // standalone run would sign in as whoever started it and the whole register
-// would be about them. The mock accepts any username and checks no password.
+// would be about them. A development service accepts any username and checks
+// no password; a product one verifies the password below against the entry
+// provisionPerson() writes.
 // ---------------------------------------------------------------------------
 const USER = process.env.DELEGATION_USER || "bob_end_user";
+
+// THE PERSON'S PASSWORD, which only a PRODUCT service reads. Generated per
+// process unless given, and deliberately not derivable from anything: the
+// entry outlives the run on a kept deployment, and a password anybody could
+// work out from this file would be an account anybody could sign in to. The
+// fixed prefix and suffix are there for a password policy's character
+// classes, the random middle is the secret.
+const USER_PASSWORD = process.env.DELEGATION_USER_PASSWORD ||
+    ("Chain-" + crypto.randomBytes(15).toString("base64url") + "-9a!");
+
+// THE CLIENT SECRETS, ONE PER CONFIDENTIAL TIER, PRODUCT ONLY. Generated per
+// process and written onto the entry by provisionForProduct() — `set`, so a
+// second run against a kept service REPLACES the last run's secret rather
+// than needing to know it. 48 random bytes, the size the service mints its
+// own (oauth2.registeredSecretBytes), which is long enough for HS512.
+const clientSecrets = {};
+
+function clientSecretOf(identifier) {
+  log.debug("Entering clientSecretOf(). " + identifier);
+  if (!clientSecrets[identifier]) {
+    clientSecrets[identifier] = crypto.randomBytes(48).toString("base64url");
+  }
+  log.debug("Leaving clientSecretOf().");
+  return clientSecrets[identifier];
+}
 const WEBAPP = process.env.DELEGATION_WEBAPP_CLIENT_ID || "webapp1";
 const GATEWAY = process.env.DELEGATION_GATEWAY_CLIENT_ID || "apigw1";
 const ESB = process.env.DELEGATION_ESB_CLIENT_ID || "esb1";
@@ -375,8 +460,11 @@ function artifactDir() {
 }
 
 // ---------------------------------------------------------------------------
-// The management API — unprotected, deliberately, which is what lets the
-// assertions run whatever the console's gate is doing.
+// The management API — NOT behind the console's gate, which is what lets the
+// assertions run whatever that gate is doing. It takes an access token of its
+// own (iya-sts since 2026-09-09), and this file never handles one:
+// tools/attach-admin-token.js, which run-report.js preloads, puts the run's
+// STS_ADMIN_API_TOKEN on every call to `/admin-api`.
 // ---------------------------------------------------------------------------
 async function delegationJson(query) {
   log.debug("Entering delegationJson(). query=" + query);
@@ -562,6 +650,14 @@ async function provisionApplications() {
     entries.push(await provisionApplication(APPLICATIONS[i]));
   }
   await provisionDelegatedPermissions();
+  // After the entries exist: appAllowedToDelegateTo names another
+  // application, which has to be there to be named. Product needs the whole
+  // configuration; development needs the delegation policy's half of it.
+  if (await isProductMode()) {
+    await provisionForProduct();
+  } else {
+    await provisionPolicy();
+  }
   log.debug("Leaving provisionApplications(). " + entries.length + ".");
   return entries;
 }
@@ -627,6 +723,14 @@ async function provisionDelegatedPermissions() {
       why: pair.why
     });
   }
+  // WHO MAY ACT FOR WHOM, which is not the permission register above: iya-sts
+  // asks its delegation policy (#186) about every RFC 8693 exchange. The two
+  // exchanging tiers each hand the subject on to the next — the gateway to
+  // the bus, the bus to the provider — and webapp1 exchanges nothing.
+  await registry.allowHop(stsBase(), { actor: GATEWAY, target: ESB,
+    why: "the gateway exchanges the sign-in's token for the bus" });
+  await registry.allowHop(stsBase(), { actor: ESB, target: PROVIDER,
+    why: "the bus exchanges that for the provider" });
   // WEBAPP1 EXPOSES NOTHING, asserted rather than assumed — `delegate()`
   // checks containment, and an application that acquired an API would pass
   // every check above while being the one arrangement this cast is built to
@@ -645,6 +749,328 @@ async function provisionDelegatedPermissions() {
   log.info("[permissions] " + DELEGATIONS.length + " pair(s) granted, and " +
            WEBAPP + " exposes nothing.");
   log.debug("Leaving provisionDelegatedPermissions().");
+}
+
+// ---------------------------------------------------------------------------
+// WHICH MODE THE SERVICE IS IN, ASKED OF THE SERVICE.
+//
+// `GET /admin-api/mode` answers `isProduct` for the realm the request is in —
+// the default realm here — and it is the document the console's mode page is
+// drawn from, so it is the service's own statement rather than a reading of
+// one setting. A service from before that operation (404) is asked for
+// `global.mode` through `GET /admin-api/config` instead, which is what
+// sts_applications.js's isProduct() reads; anything else is a failure, because
+// guessing the mode would run the wrong half of this file and report its
+// refusals as the service's.
+// ---------------------------------------------------------------------------
+let productMode = null;
+
+async function isProductMode() {
+  log.debug("Entering isProductMode().");
+  if (productMode !== null) {
+    log.debug("Leaving isProductMode(). Cached: " + productMode);
+    return productMode;
+  }
+  const url = stsBase() + "/admin-api/mode";
+  const r = await common.httpJson(url, {
+    headers: { Accept: "application/json" }
+  });
+  if (r.status === 404) {
+    productMode = await registry.isProduct(stsBase());
+    log.info("[mode] " + url + " is not there (an older service), so " +
+             "global.mode was read instead: " +
+             (productMode ? "product" : "development") + ".");
+    log.debug("Leaving isProductMode(). From global.mode.");
+    return productMode;
+  }
+  assert.ok(r.ok && r.body && typeof r.body.isProduct === "boolean",
+    "GET " + url + " should answer 200 with `isProduct`, and answered " +
+    r.status + ": " + String(r.raw).slice(0, 200) + ". A 401 is the " +
+    "management API without its access token — STS_ADMIN_API_TOKEN, which " +
+    "tools/attach-admin-token.js presents.");
+  productMode = r.body.isProduct;
+  log.info("[mode] the service says it is in " + r.body.mode + " mode" +
+           (productMode ? ", so this run provisions what product refuses " +
+            "without, and asserts what product answers." : "."));
+  log.debug("Leaving isProductMode(). " + productMode);
+  return productMode;
+}
+
+// The debugger's own origin: where every browser-direct call here comes FROM,
+// and therefore what each application must list on `appCorsOrigin` before a
+// product service answers it.
+function debuggerOrigin() {
+  log.debug("Entering debuggerOrigin().");
+  const origin = new URL(baseUrl).origin;
+  log.debug("Leaving debuggerOrigin(). " + origin);
+  return origin;
+}
+
+// ---------------------------------------------------------------------------
+// WHAT PRODUCT MODE NEEDS ON EACH ENTRY, AS ONE TABLE.
+//
+// Written as the attributes the service's own `editable` table names, so the
+// shared provision() can reconcile them on an entry an earlier run left behind
+// and then assert they are all there. The client SECRET is the one attribute
+// not in it: it is a credential, which the registry does not hand back for a
+// containment check to read, so it is written by itself (setClientSecret()).
+//
+// Each member below is a refusal the product service gave without it:
+//   appCorsOrigin            the discovery fetch and every token call are made
+//                            from the debugger's origin, and the allowlist is
+//                            the only way one is answered;
+//   oauthRedirectUri         exact matching against a REGISTERED address;
+//   oauthTokenEndpointAuthMethod / oauthConfidential
+//                            `none` alone makes webapp1 public (PKCE, no
+//                            secret); the two secret methods make the middle
+//                            tiers and sp1 confidential;
+//   oauthGrantType           what each tier actually uses, and no more;
+//   oauthAllowedScope        the scopes it may be issued (STS-OAUTH-0578);
+//   appDelegationSemantics, appDefaultDelegationSemantics,
+//   appAllowedToDelegateTo   the delegation policy's rules 7 and 10 for an
+//                            impersonation.
+// ---------------------------------------------------------------------------
+const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+const SECRET_METHODS = ["client_secret_basic", "client_secret_post"];
+
+// The tier each middle tier forwards to, read off the same DELEGATIONS table
+// the permission grants are made from, so the policy and the permissions
+// cannot describe two different chains.
+function forwardsTo(identifier) {
+  log.debug("Entering forwardsTo(). " + identifier);
+  const found = DELEGATIONS.filter(function (pair) {
+    return pair.client === identifier;
+  });
+  log.debug("Leaving forwardsTo().");
+  return found.length ? found[0].resource : "";
+}
+
+function productFieldsFor(identifier) {
+  log.debug("Entering productFieldsFor(). " + identifier);
+  const fields = {
+    appCorsOrigin: [debuggerOrigin()],
+    oauthAllowedScope: BASE_SCOPE.split(" ")
+  };
+  if (identifier === WEBAPP) {
+    fields.oauthTokenEndpointAuthMethod = ["none"];
+    fields.oauthRedirectUri = [baseUrl + "/callback"];
+    fields.oauthGrantType = ["authorization_code", "refresh_token"];
+    fields.oauthResponseType = ["code"];
+    log.debug("Leaving productFieldsFor(). The public client.");
+    return fields;
+  }
+  fields.oauthConfidential = "TRUE";
+  fields.oauthTokenEndpointAuthMethod = SECRET_METHODS;
+  if (forwardsTo(identifier)) {
+    fields.oauthGrantType = [TOKEN_EXCHANGE_GRANT];
+  }
+  Object.assign(fields, policyFieldsFor(identifier));
+  log.debug("Leaving productFieldsFor(). A confidential client.");
+  return fields;
+}
+
+// ---------------------------------------------------------------------------
+// THE DELEGATION POLICY'S HALF OF THAT TABLE, WHICH IS NOT PRODUCT'S ALONE.
+//
+// A service with the policy's SEMANTICS (iya-sts #186) chooses delegation or
+// impersonation for an exchange that names neither, by the actor's default
+// and then the realm's — and the realm's default is DELEGATION. So against
+// such a service, in either mode, a middle tier with no default of its own is
+// issued a token carrying `act: { sub: "apigw1" }`, and the act is filed as a
+// delegation: a different scenario, which assertTokenDescribes() refuses by
+// name. The scenario here is impersonation, so the tiers SAY so, in both
+// modes; development then records the act as allowed rather than as "would
+// have been refused", and product issues it at all.
+//
+// A service from before the semantics existed — the sts/ gitlink this suite
+// pins, which impersonates whenever no actor token is sent — has none of
+// these attributes, and its `editable` table says so; provisionPolicy() asks
+// that table rather than a version, and writes nothing there.
+// ---------------------------------------------------------------------------
+function policyFieldsFor(identifier) {
+  log.debug("Entering policyFieldsFor(). " + identifier);
+  const next = identifier === WEBAPP ? "" : forwardsTo(identifier);
+  if (!next) {
+    log.debug("Leaving policyFieldsFor(). Not a middle tier.");
+    return {};
+  }
+  log.debug("Leaving policyFieldsFor(). Impersonating towards " + next + ".");
+  return {
+    appDelegationSemantics: ["impersonation"],
+    appDefaultDelegationSemantics: "impersonation",
+    appAllowedToDelegateTo: [next]
+  };
+}
+
+// Development's half: the policy fields alone, on a service that has them.
+async function provisionPolicy() {
+  log.debug("Entering provisionPolicy().");
+  if (!(await registry.registryEditable(stsBase(),
+                                        "appDefaultDelegationSemantics"))) {
+    log.info("[policy] this service has no delegation semantics to " +
+             "configure (it predates them), and impersonates whenever no " +
+             "actor token is sent.");
+    log.debug("Leaving provisionPolicy(). Nothing to write.");
+    return;
+  }
+  for (let i = 0; i < APPLICATIONS.length; i++) {
+    const identifier = APPLICATIONS[i].identifier;
+    const fields = policyFieldsFor(identifier);
+    if (!Object.keys(fields).length) {
+      continue;
+    }
+    await registry.provision(stsBase(), {
+      identifier: identifier,
+      name: APPLICATIONS[i].name,
+      protocols: DECLARED_PROTOCOLS,
+      fields: fields,
+      why: "the delegation policy's rules for " + identifier
+    });
+  }
+  log.info("[policy] " + GATEWAY + " impersonates towards " +
+           forwardsTo(GATEWAY) + ", and " + ESB + " towards " +
+           forwardsTo(ESB) + ", by their own default.");
+  log.debug("Leaving provisionPolicy().");
+}
+
+// The run's secret, written onto the entry. `set` rather than part of the
+// create, so a second run against a kept service replaces the first run's
+// secret instead of needing to know it.
+async function setClientSecret(identifier) {
+  log.debug("Entering setClientSecret(). " + identifier);
+  const wrote = await registry.adminPost(stsBase(), "/applications/set", {
+    application: identifier, attribute: "oauthClientSecret",
+    value: clientSecretOf(identifier)
+  });
+  assert.ok(wrote && wrote.ok,
+    "setting a client secret on " + identifier + " was refused: " +
+    JSON.stringify(wrote).slice(0, 300) + ". Product mode refuses a " +
+    "confidential client that presents none.");
+  log.debug("Leaving setClientSecret().");
+}
+
+// THE AUTHENTICATION METHODS ARE MADE EXACTLY THESE, which is the one place
+// containment is not enough. `none` may not be held beside another method —
+// public and confidential are exclusive, and the registry refuses the mixture
+// by name — and an entry created without a method is created PUBLIC: the four
+// are created above with nothing but their identifiers and audiences, which
+// is what development needs, and they come back holding `none`. So whatever
+// the entry holds that this tier does not use is removed first, and only then
+// does provision() add what it does use.
+async function settleAuthMethods(identifier, wanted) {
+  log.debug("Entering settleAuthMethods(). " + identifier);
+  const entry = await registry.entryOf(stsBase(), identifier);
+  const held = registry.valuesOf(entry && entry.fields &&
+      entry.fields.oauthTokenEndpointAuthMethod);
+  const extra = held.filter(function (one) {
+    return wanted.indexOf(one) < 0;
+  });
+  for (let i = 0; i < extra.length; i++) {
+    const removed = await registry.adminPost(stsBase(),
+        "/applications/remove", {
+          application: identifier,
+          attribute: "oauthTokenEndpointAuthMethod",
+          value: extra[i]
+        });
+    assert.ok(removed && removed.ok,
+      "removing the authentication method " + extra[i] + " from " +
+      identifier + " was refused: " + JSON.stringify(removed).slice(0, 300));
+  }
+  if (extra.length) {
+    log.info("[registry] " + identifier + " held " + extra.join(", ") +
+             ", which it does not authenticate with here; removed.");
+  }
+  log.debug("Leaving settleAuthMethods(). Removed " + extra.length + ".");
+}
+
+async function provisionForProduct() {
+  log.debug("Entering provisionForProduct().");
+  log.info("=== Product mode: the person, the clients' credentials and " +
+           "the delegation policy ===");
+  await registry.ensurePerson(stsBase(), USER, USER_PASSWORD);
+  log.info("[directory] " + USER + " holds a password this run knows" +
+           (process.env.DELEGATION_USER_PASSWORD ? " (DELEGATION_USER_" +
+            "PASSWORD)." : " (generated; set DELEGATION_USER_PASSWORD to " +
+            "choose it)."));
+  for (let i = 0; i < APPLICATIONS.length; i++) {
+    const identifier = APPLICATIONS[i].identifier;
+    const fields = productFieldsFor(identifier);
+    await settleAuthMethods(identifier, fields.oauthTokenEndpointAuthMethod);
+    await registry.provision(stsBase(), {
+      identifier: identifier,
+      name: APPLICATIONS[i].name,
+      protocols: DECLARED_PROTOCOLS,
+      fields: fields,
+      why: "product mode's configuration for " + identifier
+    });
+    if (identifier !== WEBAPP) {
+      await setClientSecret(identifier);
+    }
+  }
+  log.info("[policy] " + GATEWAY + " may impersonate towards " +
+           forwardsTo(GATEWAY) + ", and " + ESB + " towards " +
+           forwardsTo(ESB) + "; " + WEBAPP + " is public and signs in with " +
+           "PKCE.");
+  log.debug("Leaving provisionForProduct().");
+}
+
+// ---------------------------------------------------------------------------
+// WHICH CONSOLE THIS SERVICE HAS, because there are two and they are read in
+// different places.
+//
+// Until iya-sts #446 (2026-10-05) `/admin` was drawn on the SERVER: a page
+// behind a sign-in, answering `?format=json` and `?format=svg`, which is what
+// every console read below was written against. Since then it is a STATIC
+// APPLICATION — every `/admin/*` path answers the same document, which loads
+// `/admin/console.js`, signs in in the browser and draws each page from its
+// `/admin-api` operation. Against that console the reads here would get the
+// shell back with a 200, and console_signin.js reports a gate that does not
+// redirect as one switched OFF — so the job would go on to fail saying the
+// tokens page links nothing, which is a sentence about a page that no longer
+// exists on the server.
+//
+// So the job asks which one it is talking to, by the one thing that tells
+// them apart — the shell names its script — and reads the static console's
+// data where the console itself reads it: the management API, whose `GET`
+// operations each say which console page they mirror. Either kind of console
+// may be in either mode; a development service pinned before #446 keeps the
+// server-drawn reads exactly as they were.
+// ---------------------------------------------------------------------------
+let staticConsole = null;
+
+async function consoleIsStatic() {
+  log.debug("Entering consoleIsStatic().");
+  if (staticConsole !== null) {
+    log.debug("Leaving consoleIsStatic(). Cached: " + staticConsole);
+    return staticConsole;
+  }
+  const url = stsBase() + "/admin/tokens";
+  const r = await fetch(url, { redirect: "manual" });
+  const text = await r.text();
+  staticConsole = r.status === 200 && text.indexOf("/admin/console.js") >= 0;
+  log.info("[console] " + (staticConsole ?
+      "/admin is the static application (iya-sts #446): its pages are " +
+      "read through the /admin-api operations they mirror." :
+      "/admin is drawn on the server: its pages are read as they are."));
+  log.debug("Leaving consoleIsStatic(). " + staticConsole);
+  return staticConsole;
+}
+
+// One management API document, for the static console's reads. A refusal is
+// a failure here rather than a skip: this API is not behind the console's
+// gate or its roster, so the only thing that can refuse it is a missing
+// access token, and that is the run's configuration, not another job's.
+async function managementJson(urlPath, what) {
+  log.debug("Entering managementJson(). " + urlPath);
+  const url = stsBase() + urlPath;
+  const r = await common.httpJson(url, {
+    headers: { Accept: "application/json" }
+  });
+  assert.ok(r.ok && r.body && typeof r.body === "object",
+    "GET " + url + " (" + what + ") should answer 200 with JSON and " +
+    "answered " + r.status + ": " + String(r.raw).slice(0, 200));
+  log.debug("Leaving managementJson().");
+  return r.body;
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +1135,62 @@ async function saveDrawing(session, urlPath, filename, what) {
   return text;
 }
 
+// ---------------------------------------------------------------------------
+// THE DRAWINGS THE STATIC CONSOLE LEAVES WITHIN REACH.
+//
+// The server still draws every picture, but since iya-sts #446 the delegation
+// map, the per-chain and per-application drawings are the CONSOLE's own
+// operations (`/admin-api/console/…`), which take `admin:console` — a scope
+// issued only to the console's own public client, signed in in a browser with
+// a DPoP key. A job holding the management API's token cannot have one, so
+// those SVGs are not saved here, and the log says so rather than leaving a
+// report directory that is quietly missing them.
+//
+// What the management API does draw is the LINEAGE — `GET /admin-api/tokens/
+// credential?format=svg` — which is the one picture holding every party of
+// this chain, webapp1 included. It is saved and held to naming all five. And
+// the GRAPHS the two missing maps are drawn from are saved as JSON beside it,
+// because the picture can be redrawn from them and the facts cannot be
+// recovered once the run is gone.
+// ---------------------------------------------------------------------------
+async function saveStaticDrawings(jti) {
+  log.debug("Entering saveStaticDrawings().");
+  const svg = await saveDrawing(null,
+      "/admin-api/tokens/credential?id=" + encodeURIComponent(jti) +
+      "&format=svg",
+      "credential-lineage-" + PROVIDER + ".svg",
+      "where the final token came from — every generation behind it");
+  assert.ok(svg && svg.indexOf("<svg") >= 0,
+    "the lineage drawing is not an SVG document: " +
+    String(svg).slice(0, 200));
+  // The markup removed, and removed-and-joined, for the reason the
+  // server-drawn map's check gives: a label can be split across <tspan>s.
+  const drawn = svg.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  const joined = svg.replace(/<[^>]*>/g, "");
+  [USER, WEBAPP, GATEWAY, ESB, PROVIDER].forEach(function (name) {
+    assert.ok(drawn.indexOf(name) >= 0 || joined.indexOf(name) >= 0,
+      "the lineage drawing does not mention \"" + name + "\", so the " +
+      "picture is missing a box the graph says is in it. What it draws: " +
+      drawn.slice(0, 400));
+  });
+  log.info("[drawing] the lineage names " + USER + ", " + WEBAPP + ", " +
+           GATEWAY + ", " + ESB + " and " + PROVIDER + ".");
+  await saveDrawing(null,
+      "/admin-api/delegation?q=" + encodeURIComponent(USER) + "&per=200",
+      "delegation-map-" + USER + ".json",
+      "the graph the delegation map is drawn from");
+  await saveDrawing(null,
+      "/admin-api/delegation/application?application=" +
+      encodeURIComponent(ESB),
+      "delegation-application-" + ESB + ".json",
+      "everything " + ESB + " is part of — the tier in the middle");
+  log.warn("[drawing] the delegation map, chain and application SVGs are " +
+           "the static console's own operations (/admin-api/console, " +
+           "admin:console, iya-sts #446), which the management API's token " +
+           "does not reach; their graphs were saved as JSON instead.");
+  log.debug("Leaving saveStaticDrawings().");
+}
+
 // One console page, as JSON. The console answers `?format=json` on every page
 // and refuses it with 401 rather than redirecting when there is no session,
 // which is the whole reason signInToTheConsole() exists. Null when the gate
@@ -747,14 +1229,21 @@ async function consoleJson(session, urlPath, what) {
 // three jtis this test actually received off the wire are the assertion. A
 // lineage that agreed about the SHAPE (three generations, two exchanges) and
 // named different tokens would be a page describing somebody else's chain.
+//
+// Under the static console the same document is `GET /admin-api/tokens/
+// credential`, which the console's page is drawn from — so the assertions
+// below are unchanged and only the address moves.
 // ---------------------------------------------------------------------------
 async function assertTheLineage(session, expected) {
   log.debug("Entering assertTheLineage().");
   log.info("=== The credential's ancestry, at /admin/tokens/credential ===");
-  const lineage = await consoleJson(session,
-      "/admin/tokens/credential?id=" + encodeURIComponent(expected.jtis[0]) +
-      "&format=json",
-      "the final token's lineage");
+  const id = encodeURIComponent(expected.jtis[0]);
+  const lineage = (await consoleIsStatic()) ?
+      await managementJson("/admin-api/tokens/credential?id=" + id,
+                           "the final token's lineage") :
+      await consoleJson(session,
+          "/admin/tokens/credential?id=" + id + "&format=json",
+          "the final token's lineage");
   if (!lineage) {
     log.debug("Leaving assertTheLineage(). The console refused.");
     return null;
@@ -1075,6 +1564,109 @@ async function assertTheChoosersSearch(session) {
 }
 
 // ---------------------------------------------------------------------------
+// THE SAME TWO CHECKS AGAINST THE STATIC CONSOLE, where the markup they read
+// is drawn in the BROWSER from `/admin-api` and no longer exists on the
+// server to be read.
+//
+// What each check was FOR is still asked, of the document the page is drawn
+// from:
+//
+//   * the tokens table holds this token — the issuance it came back in is a
+//     row of `GET /admin-api/tokens`, and opening that row
+//     (`GET /admin-api/tokens/set`) lists the token itself, which is what the
+//     page then links to its lineage;
+//   * the choosers are a SEARCH — `appq` and `userq` narrow the
+//     `applicationChooser` and `userChooser` the delegation register answers
+//     with, a term nothing matches answers none, and neither pane holds more
+//     than twenty.
+//
+// What is NOT asked is the regression guard about the `<select>`: that is a
+// claim about markup, and the markup is the static application's now, which
+// iya-sts's own console tests hold. Said in the log rather than passed in
+// silence.
+// ---------------------------------------------------------------------------
+async function assertTheTokensListHoldsIt(jti) {
+  log.debug("Entering assertTheTokensListHoldsIt().");
+  const view = await managementJson("/admin-api/tokens?per=300",
+      "the tokens table's own document, to find the row this token is in");
+  const set = (view.sets || []).filter(function (one) {
+    return (one.members || []).some(function (member) {
+      return member.jti === jti;
+    });
+  })[0];
+  assert.ok(set,
+    "the token this test just obtained (" + jti + ") is in no row of the " +
+    "tokens table's first page, which holds " + (view.sets || []).length +
+    " of " + view.matched + " issuance(s). Newest is first there, so a token " +
+    "minted seconds ago being off it is the register having stopped " +
+    "recording rather than the page being long.");
+  const setKey = set.setKey || ("set:" + set.setId);
+  const opened = await managementJson("/admin-api/tokens/set?id=" +
+      encodeURIComponent(setKey), "the issuance this token came back in");
+  const members = JSON.stringify(opened);
+  assert.ok(opened.found !== false && members.indexOf(jti) >= 0,
+    "opening the issuance " + setKey + " does not list the token this test " +
+    "obtained (" + jti + "), so the console's row for it would link to a " +
+    "set without it: " + members.slice(0, 300));
+  log.info("[console] the tokens table holds the issuance " + setKey +
+           ", and opening it lists " + jti + ".");
+  log.debug("Leaving assertTheTokensListHoldsIt().");
+}
+
+// The labels one chooser drew, read off the delegation register's answer.
+function chooserLabels(chooser) {
+  log.debug("Entering chooserLabels().");
+  const labels = ((chooser && chooser.entries) || []).map(function (one) {
+    return String(one.label || one.key || "");
+  });
+  log.debug("Leaving chooserLabels(). " + labels.length + ".");
+  return labels;
+}
+
+async function assertTheChoosersSearchApi() {
+  log.debug("Entering assertTheChoosersSearchApi().");
+  const searched = await managementJson("/admin-api/delegation?per=1&appq=" +
+      encodeURIComponent(GATEWAY), "the application chooser, searched");
+  const hits = chooserLabels(searched.applicationChooser);
+  assert.ok(hits.indexOf(GATEWAY) >= 0,
+    "searching the application chooser for \"" + GATEWAY + "\" does not " +
+    "find it. The pane holds: " + JSON.stringify(hits) + ".");
+  assert.ok(hits.indexOf(ESB) < 0 && hits.indexOf(PROVIDER) < 0,
+    "searching for \"" + GATEWAY + "\" also found " + ESB + " or " +
+    PROVIDER + ", so the term is being ignored. The pane holds: " +
+    JSON.stringify(hits) + ".");
+  assert.ok(hits.length <= 20,
+    "the application pane holds " + hits.length + " results against a cap " +
+    "of 20.");
+  const none = await managementJson("/admin-api/delegation?per=1&appq=" +
+      encodeURIComponent("zzz-no-such-application-zzz"),
+      "the application chooser, searched for nothing");
+  const empty = chooserLabels(none.applicationChooser);
+  assert.strictEqual(empty.length, 0,
+    "a search for a name nothing can match found " + empty.length +
+    " result(s): " + JSON.stringify(empty) + ". A search that answers with " +
+    "the whole list is a decoration.");
+  const person = await managementJson("/admin-api/delegation?per=1&userq=" +
+      encodeURIComponent(USER), "the person chooser, searched");
+  const people = chooserLabels(person.userChooser);
+  assert.ok(people.some(function (one) {
+    return one.indexOf(USER) >= 0;
+  }),
+    "searching the person chooser for \"" + USER + "\" does not find them, " +
+    "and this job signed them in. The pane holds: " + JSON.stringify(people) +
+    ".");
+  assert.ok(people.length <= 20,
+    "the person pane holds " + people.length + " results against a cap of " +
+    "20.");
+  log.info("[console] the choosers search: \"" + GATEWAY + "\" finds " +
+           hits.length + " application(s) and neither " + ESB + " nor " +
+           PROVIDER + ", nothing finds none, and \"" + USER + "\" finds " +
+           people.length + " person(s). Whether the page still draws a " +
+           "<select> is the static console's markup and is not read here.");
+  log.debug("Leaving assertTheChoosersSearchApi().");
+}
+
+// ---------------------------------------------------------------------------
 // A NEW WORKFLOW. The storage is cleared on the debugger's own origin, then
 // discovery is run again — which is the whole of what a fresh application knows
 // when it is handed a token: where the authorization server is, and nothing
@@ -1120,9 +1712,12 @@ async function startNewWorkflow(driver, discoveryEndpoint, who, previous) {
   log.debug("Leaving startNewWorkflow().");
 }
 
-// The mock's sign-in screen, which reuses Keycloak's field ids. It checks no
-// password; the username typed here is the identity every token then describes.
-async function signIn(driver, user) {
+// The service's sign-in screen, which reuses Keycloak's field ids. The
+// username typed here is the identity every token then describes. A
+// development service checks no password, so the username goes in that field
+// as it always did; a product one verifies `password` against the entry
+// provisionForProduct() wrote.
+async function signIn(driver, user, password) {
   log.debug("Entering signIn(). user=" + user);
   const username = By.id("username");
   try {
@@ -1140,7 +1735,7 @@ async function signIn(driver, user) {
   const passwordFields = await driver.findElements(By.id("password"));
   if (passwordFields.length) {
     await passwordFields[0].clear();
-    await passwordFields[0].sendKeys(user);
+    await passwordFields[0].sendKeys(password || user);
   }
   await driver.findElement(By.id("kc-login")).click();
   // AND THE CONSENT SCREEN, if there is one. It is PASSED rather than asserted:
@@ -1175,9 +1770,10 @@ async function authenticateTheUser(driver, clientId, scope) {
       .selectByVisibleText("OIDC Authorization Code Flow(code)");
 
   // PKCE, because webapp1 is a public client: it has no secret here, and RFC
-  // 9700 wants one from every client anyway. The mock does not require it
-  // outside its compliant realm, which is exactly why it is asked for
-  // explicitly rather than left to a default.
+  // 9700 wants one from every client anyway. A product service REQUIRES it of
+  // a public client; a development one does not outside its compliant realm,
+  // which is exactly why it is asked for explicitly rather than left to a
+  // default.
   await driver.wait(until.elementLocated(By.id("usePKCE-yes")), waitTime);
   await driver.findElement(By.id("usePKCE-yes")).click();
 
@@ -1217,18 +1813,36 @@ async function authenticateTheUser(driver, clientId, scope) {
     "reads: " + preview);
   assert.ok(preview.indexOf("code_challenge=") >= 0,
     "PKCE was selected and the authorization request carries no " +
-    "code_challenge, so the radio did not take. This mock does not require " +
-    "PKCE outside its compliant realm, so nothing downstream would fail. It " +
-    "reads: " + preview);
+    "code_challenge, so the radio did not take. A development service does " +
+    "not require PKCE outside its compliant realm, so nothing downstream " +
+    "would fail there; a product one refuses the request. It reads: " +
+    preview);
   log.info("[" + clientId + "] the authorization request carries " +
            "client_id=" + clientId + ", response_type=code, a PKCE " +
            "challenge and every requested scope.");
 
   await driver.findElement(
       By.css("input[type=\"submit\"][value=\"Authorize\"]")).click();
-  await signIn(driver, USER);
+  await signIn(driver, USER, (await isProductMode()) ? USER_PASSWORD : null);
 
-  await driver.wait(until.urlContains("/oauth2_oidc_2.html"), waitTime * 5);
+  // WHERE THE BROWSER STOPPED, when it never comes back. A product service
+  // refuses on a page of its own — a wrong password on the sign-in screen, an
+  // unregistered redirect URI or an undeclared scope on an error page — and a
+  // bare "waiting for URL" timeout names none of them, so the address and the
+  // words on the page go into the failure.
+  try {
+    await driver.wait(until.urlContains("/oauth2_oidc_2.html"),
+                      waitTime * 5);
+  } catch (e) {
+    const stoppedAt = await driver.getCurrentUrl();
+    const said = await driver.executeScript(
+        "return document.body ? document.body.innerText : '';");
+    log.debug("Leaving authenticateTheUser(). Never came back.");
+    throw new Error("the sign-in for " + clientId + " never came back to " +
+                    "oauth2_oidc_2.html (" + e.message + "). The browser is " +
+                    "at " + stoppedAt + ", which says: " +
+                    String(said || "").replace(/\s+/g, " ").slice(0, 600));
+  }
   await waitFor.waitForPageBundle(driver, "oauth2_oidc_2.html's bundle");
   const code = await waitFor.waitForFilled(driver, "code",
       "the authorization code should come back and reach the Token " +
@@ -1348,7 +1962,10 @@ async function exchangeAs(driver, hop) {
   };
   await set("tokenexchange_subject_token", hop.subjectToken);
   await set("tokenexchange_client_id", hop.clientId);
-  await set("tokenexchange_client_secret", "");
+  // The tier's secret in product, where the token-exchange grant belongs to a
+  // confidential client; none in development, which never asked for one and
+  // still does not. The pane then authenticates with HTTP Basic, its default.
+  await set("tokenexchange_client_secret", hop.clientSecret || "");
   await set("tokenexchange_audience", hop.audience);
   await set("tokenexchange_scope", hop.scope);
 
@@ -1362,9 +1979,29 @@ async function exchangeAs(driver, hop) {
   assert.ok(request.indexOf(
       "grant_type=urn:ietf:params:oauth:grant-type:token-exchange") >= 0,
     "the request is not an RFC 8693 exchange. It reads: " + request);
-  assert.ok(request.indexOf("client_id=" + hop.clientId) >= 0,
+  // THE CLIENT, and in product its CREDENTIAL. The pane names the client in
+  // the body, or in an HTTP Basic credential when its header style is chosen
+  // and a secret is set, and draws the secret elided either way; which style
+  // it uses is the pane's choice and not this test's subject, so either
+  // spelling counts. What is held per mode is whether a secret goes at all:
+  // product's token-exchange grant is a confidential client's, and a secret
+  // that silently went missing should fail HERE and not as a 401 from the
+  // token endpoint; development sent none and still sends none.
+  const basic = "Authorization: Basic base64(" + hop.clientId +
+      ":<client_secret>)";
+  assert.ok(request.indexOf("client_id=" + hop.clientId) >= 0 ||
+            request.indexOf(basic) >= 0,
     "the exchange is about to be made as somebody else — it should name " +
     hop.clientId + ". It reads: " + request);
+  const sendsSecret = request.indexOf("client_secret=<client_secret>") >= 0 ||
+      request.indexOf(basic) >= 0;
+  assert.strictEqual(sendsSecret, !!hop.clientSecret,
+    hop.clientSecret ?
+      "the exchange as " + hop.clientId + " carries no client secret, and " +
+      "the token-exchange grant is a confidential client's in product. It " +
+      "reads: " + request :
+      "the exchange as " + hop.clientId + " carries a client secret nobody " +
+      "set in this workflow. It reads: " + request);
   assert.ok(request.indexOf("audience=" + hop.audience) >= 0,
     "the exchange does not name " + hop.audience + " as the audience, so the " +
     "token that comes back would be addressed to nothing in particular and " +
@@ -1529,16 +2166,30 @@ function assertTokenDescribes(token, expect) {
 // The issuer's own reading of the final token. Decoding a string proves what
 // this test was handed; introspection proves what the authorization server
 // thinks it issued, which is the reading a resource server would get.
+//
+// The caller is the far end, sp1 — the resource server a token for it would
+// be presented to. A development service lets it name itself; a product one
+// AUTHENTICATES every introspection request (401 invalid_client otherwise),
+// so there it presents the secret provisionForProduct() gave it, as HTTP
+// Basic.
 // ---------------------------------------------------------------------------
 async function introspect(token, clientId) {
   log.debug("Entering introspect().");
   const url = stsBase() + "/oauth2/introspect";
+  const headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  let body = "token=" + encodeURIComponent(token) +
+      "&token_type_hint=access_token";
+  if (await isProductMode()) {
+    headers.Authorization = "Basic " + Buffer.from(
+        encodeURIComponent(clientId) + ":" +
+        encodeURIComponent(clientSecretOf(clientId))).toString("base64");
+  } else {
+    body += "&client_id=" + encodeURIComponent(clientId);
+  }
   const r = await common.httpJson(url, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: "token=" + encodeURIComponent(token) +
-          "&token_type_hint=access_token" +
-          "&client_id=" + encodeURIComponent(clientId),
+    headers: headers,
+    body: body,
   });
   assert.ok(r.ok, "POST " + url + " should answer 200 and answered " +
             r.status + ": " + String(r.raw).slice(0, 200));
@@ -1573,7 +2224,8 @@ function findAct(acts, hop) {
   return found[0];
 }
 
-function assertActRecords(act, hop, claims) {
+// `expect` carries what only one mode can be held to: { product, subjectJti }.
+function assertActRecords(act, hop, claims, expect) {
   log.debug("Entering assertActRecords(). client=" + hop.clientId);
   assert.strictEqual(act.protocol, "OAuth 2.0",
     "the act was filed under protocol \"" + act.protocol + "\".");
@@ -1624,10 +2276,47 @@ function assertActRecords(act, hop, claims) {
     "the register says this act produced the token whose jti is \"" +
     produced[0].identifier + "\", and the token this test received is \"" +
     claims.jti + "\". The row and the wire are describing different tokens.");
+  // WHAT DECIDED IT, which is the one part of the row the MODE changes. A
+  // development service asks the delegation policy, issues regardless and
+  // writes what would have refused it; a product one ENFORCES it, so an act
+  // that was issued there is an act the policy ALLOWED, and the row says so
+  // by name — the actor, the subject and the application it reached. That is
+  // the product answer, asserted as such: provisionForProduct() configured
+  // exactly this permission and no wider one, and a row allowing it for any
+  // other reason would be a policy this test did not write.
+  if (expect && expect.product) {
+    assert.strictEqual(act.policed, true,
+      "a product service ENFORCES the delegation policy on a token exchange, " +
+      "and this act says it was not policed.");
+    const allowed = "the issuance policy allowed impersonation by \"" +
+        hop.clientId + "\" for \"" + USER + "\" to \"" + hop.target + "\"";
+    assert.ok(String(act.authorizedBy || "").indexOf(allowed) === 0,
+      "the act should say the policy allowed this impersonation — \"" +
+      allowed + " …\" — and says: \"" + act.authorizedBy + "\". A row " +
+      "saying \"WOULD HAVE BEEN REFUSED\" is the development reading, and " +
+      "one naming other parties is a policy this test did not provision.");
+    assert.strictEqual(act.reason, "",
+      "an issued act carries a refusal reason: \"" + act.reason + "\".");
+    // AND WHAT IT CONSUMED, which in product is a token this service signed
+    // and VERIFIED — the previous hop's, by jti. That is the link the lineage
+    // page walks, asserted at its source.
+    const consumed = (act.consumed || []).filter(function (one) {
+      return one.kind === "subject_token";
+    });
+    assert.ok(consumed.length === 1 &&
+              consumed[0].identifier === expect.subjectJti,
+      "the act should record consuming the subject token " +
+      expect.subjectJti + " (the token this hop was handed), and records " +
+      JSON.stringify(act.consumed) + ".");
+    assert.ok(/verified/.test(String(consumed[0].note || "")),
+      "a product service verifies the subject token before it exchanges " +
+      "it, and the act's note on it is \"" + consumed[0].note + "\".");
+  }
   log.info("[register] act " + act.seq + ": " + act.typeLabel + " — " +
            act.initial.presented + " -> " + act.intermediary.application +
            " -> " + act.target.application + ", producing " +
-           produced[0].identifier);
+           produced[0].identifier +
+           (expect && expect.product ? "; " + act.authorizedBy : ""));
   log.debug("Leaving assertActRecords().");
 }
 
@@ -1705,6 +2394,18 @@ function assertGraphIsAChain(graph, hops) {
 
 async function test() {
   log.debug("Entering test().");
+  // THE MODE FIRST, before there is a browser to build: product changes how
+  // the browser has to present itself (below). Asked here, outside the try
+  // that quits the driver, because there is no driver yet to orphan — a
+  // service that cannot say which mode it is in fails the job on the spot.
+  let product = false;
+  try {
+    product = await isProductMode();
+  } catch (e) {
+    log.error("could not ask the service which mode it is in: " + e.message);
+    log.debug("Leaving test(). No mode.");
+    process.exit(1);
+  }
   const options = new chrome.Options();
   if (headless) {
     // "=new", not bare --headless: the tests image pinned Chrome 121, where the
@@ -1716,6 +2417,12 @@ async function test() {
   // /tmp rather than the container's 64MB /dev/shm.
   options.addArguments("--disable-dev-shm-usage");
   browserFlags.addBrowserAccessFlags(options, baseUrl);
+  // A product service refuses a person's first sign-in from a browser that
+  // says it is headless (the risk of an automated client); see
+  // addDesktopUserAgent(). Development scores it and refuses nothing.
+  if (product) {
+    browserFlags.addDesktopUserAgent(options);
+  }
   const loggingPrefs = new logging.Preferences();
   loggingPrefs.setLevel(logging.Type.BROWSER, logging.Level.ALL);
 
@@ -1743,11 +2450,15 @@ async function test() {
 
     // The baseline, BEFORE anything is minted. Everything asserted below is a
     // delta against it: this mock's register survives between jobs and the
-    // suite runs in a pool.
+    // suite runs in a pool. The newest act's time, by the service's own
+    // clock — see "Deltas, not totals" in the header for why not its seq.
     const before = await delegationJson("?per=1");
-    const baselineSeq = Number(before.newestSeq || 0);
+    const newest = (before.acts || [])[0];
+    const baselineAt = newest ? Number(newest.at || 0) : 0;
     log.info("[register] " + before.held + " act(s) already held; this job's " +
-             "acts are the ones after seq " + baselineSeq + ".");
+             "acts are the ones recorded after " +
+             (baselineAt ? new Date(baselineAt).toISOString() : "none") +
+             ".");
 
     // --- the four applications, before anything connects -------------------
     // Deliberately BEFORE the browser: an entry created after a client_id has
@@ -1800,12 +2511,18 @@ async function test() {
     // request addresses X while its scope names Y". So each hop asks for the
     // base scope and lets `audience` carry the target — which is also the
     // spelling RFC 8693 section 2.1 gives that parameter the job of.
+    //
+    // `clientSecret` is product's: there the token-exchange grant is a
+    // confidential client's, and each middle tier presents the secret
+    // provisionForProduct() wrote. Empty in development, as it always was.
     const hops = [
       { clientId: GATEWAY, audience: audienceOf(ESB), target: ESB,
-        scope: BASE_SCOPE, subjectToken: first.access_token },
+        scope: BASE_SCOPE, subjectToken: first.access_token,
+        clientSecret: product ? clientSecretOf(GATEWAY) : "" },
       // subjectToken filled in below, from what hop 1 produced.
       { clientId: ESB, audience: audienceOf(PROVIDER), target: PROVIDER,
-        scope: BASE_SCOPE, subjectToken: "" },
+        scope: BASE_SCOPE, subjectToken: "",
+        clientSecret: product ? clientSecretOf(ESB) : "" },
     ];
 
     await startNewWorkflow(driver, discovery, GATEWAY, WEBAPP);
@@ -1902,7 +2619,7 @@ async function test() {
     const after = await delegationJson("?q=" + encodeURIComponent(USER) +
                                        "&per=200");
     const mine = (after.acts || []).filter(function (row) {
-      return Number(row.seq) > baselineSeq;
+      return Number(row.at || 0) > baselineAt;
     });
     assert.ok(mine.length >= 2,
       "this job made two exchanges and the register holds " + mine.length +
@@ -1911,27 +2628,41 @@ async function test() {
     const acts = hops.map(function (hop) {
       return findAct(mine, hop);
     });
-    assertActRecords(acts[0], hops[0], secondClaims);
-    assertActRecords(acts[1], hops[1], thirdClaims);
-    assert.ok(Number(acts[1].seq) > Number(acts[0].seq),
-      "the register puts the second hop (seq " + acts[1].seq + ") before the " +
-      "first (seq " + acts[0].seq + ").");
+    assertActRecords(acts[0], hops[0], secondClaims,
+                     { product: product, subjectJti: firstClaims.jti });
+    assertActRecords(acts[1], hops[1], thirdClaims,
+                     { product: product, subjectJti: secondClaims.jti });
+    // In ORDER, by time for the reason the baseline is: the two hops may be
+    // answered by two workers, whose sequence numbers are not comparable.
+    assert.ok(Number(acts[1].at) > Number(acts[0].at),
+      "the register puts the second hop (seq " + acts[1].seq + ", at " +
+      acts[1].at + ") before the first (seq " + acts[0].seq + ", at " +
+      acts[0].at + ").");
 
     // The graph of what matched — this person's acts — which is what
     // /admin/delegation/map draws for the same filter.
     assertGraphIsAChain(after.graph || {}, hops);
 
     // --- where the final token came from -----------------------------------
-    // The console is the only door to this one: the lineage page has no form
-    // and therefore no operation on /admin-api (the mock's rule 7), so the
-    // session is obtained here rather than with the drawings below and both
-    // use it.
-    const session = await signInToTheConsole();
-    await assertTheTokensPageLinksIt(session, thirdClaims.jti);
-    // The two pivots on the delegation page, which are a SEARCH rather than a
-    // list since 2026-08-26. Here rather than beside the drawings because it
-    // needs the same session and no picture: it reads the page's markup.
-    await assertTheChoosersSearch(session);
+    // On a server-drawn console that console is the only door to this one:
+    // the lineage page has no form and therefore no operation on /admin-api
+    // (the mock's rule 7), so the session is obtained here rather than with
+    // the drawings below and both use it. The static console (iya-sts #446)
+    // needs no session here at all — its pages are drawn from /admin-api,
+    // and that is where they are read; see consoleIsStatic().
+    const onStatic = await consoleIsStatic();
+    const session = onStatic ? null : await signInToTheConsole();
+    if (onStatic) {
+      await assertTheTokensListHoldsIt(thirdClaims.jti);
+      await assertTheChoosersSearchApi();
+    } else {
+      await assertTheTokensPageLinksIt(session, thirdClaims.jti);
+      // The two pivots on the delegation page, which are a SEARCH rather
+      // than a list since 2026-08-26. Here rather than beside the drawings
+      // because it needs the same session and no picture: it reads the
+      // page's markup.
+      await assertTheChoosersSearch(session);
+    }
     await assertTheLineage(session, {
       // Newest first, which is the order the page walks: the token esb1 was
       // handed, the one apigw1 exchanged for it, and the one bob_end_user's
@@ -1945,8 +2676,14 @@ async function test() {
     });
 
     // --- the drawings ------------------------------------------------------
+    // The static console's are fewer, and saveStaticDrawings() says which and
+    // why. Every server-drawn drawing hangs off the map below, so on the
+    // static console that one read is not made and the rest follow it.
+    if (onStatic) {
+      await saveStaticDrawings(thirdClaims.jti);
+    }
     const filter = "?q=" + encodeURIComponent(USER);
-    const svg = await saveDrawing(session,
+    const svg = onStatic ? null : await saveDrawing(session,
         "/admin/delegation/map" + filter + "&format=svg",
         "delegation-map-" + USER + ".svg",
         "the delegation map, filtered to " + USER);

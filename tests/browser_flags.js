@@ -537,7 +537,21 @@ function addDownloadDirFlags(options, extraPrefs) {
     "download.default_directory": downloadDir(),
     "download.prompt_for_download": false,
     "download.directory_upgrade": true,
-    "safebrowsing.enabled": true
+    "safebrowsing.enabled": true,
+    // NO PASSWORD MANAGER, because its "Save password?" bubble takes the
+    // window's activation and every native click and keystroke after it is
+    // DROPPED — chromedriver reports each as done, and the page receives no
+    // event at all. Most sign-ins here submit a username and a password, and
+    // Chrome offers to save them on some runs and not others, so the symptom
+    // is intermittent and lands on whatever the test does NEXT: a consent
+    // screen whose Allow press never arrives, a radio that "did not take",
+    // fields typed into that stay empty. Measured on 2026-10-21 with
+    // oidc_flows.js against the mock STS: 4 runs of 18 lost focus with the
+    // password manager on, 0 of 18 with it off. `document.hasFocus()` is
+    // false on the page that follows, which is the tell.
+    "credentials_enable_service": false,
+    "profile.password_manager_enabled": false,
+    "profile.password_manager_leak_detection": false
   };
   Object.keys(extraPrefs || {}).forEach(function (one) {
     prefs[one] = extraPrefs[one];
@@ -591,8 +605,37 @@ function addPageLoadTimeout(options) {
   return options;
 }
 
+// (8) A DESKTOP BROWSER'S USER-AGENT, FOR A JOB SIGNING A PERSON IN TO A
+// PRODUCT-MODE iya-sts.
+//
+// Headless Chrome announces itself: its User-Agent says `HeadlessChrome/…`.
+// A product-mode iya-sts scores every interactive sign-in for risk (its
+// #62), one of the evaluators is an AUTOMATED CLIENT named by that header,
+// and a person's first sign-in from one is HIGH — which the issuance policy
+// refuses (STS-RISK-0016; the screen just says "Authentication failed").
+// That is the policy its owner chose to keep, with the decision that a suite
+// driving the browser flows should look like the browser it is; iya-sts's
+// own suite preloads tools/browser-user-agent.js for exactly this. A
+// deployment's automation authenticates as a CLIENT, which is never scored.
+//
+// OPT-IN, PER JOB, AND ONLY WHERE THE SERVICE IS IN PRODUCT MODE. A
+// development service records the score and refuses nothing, and every other
+// browser here is left saying what it is — a job asserting about the
+// automated-client decision would otherwise be testing this line. The string
+// is a desktop Chrome on Linux, as iya-sts's preload sends.
+var DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+
+function addDesktopUserAgent(options) {
+  log.debug("Entering addDesktopUserAgent().");
+  options.addArguments("--user-agent=" + DESKTOP_USER_AGENT);
+  log.debug("Leaving addDesktopUserAgent().");
+  return options;
+}
+
 module.exports = {
   addBrowserAccessFlags: addBrowserAccessFlags,
+  addDesktopUserAgent: addDesktopUserAgent,
   isTransientLoadError: isTransientLoadError,
   withoutTransientLoadErrors: withoutTransientLoadErrors,
   addWebCryptoEd25519Flags: addWebCryptoEd25519Flags,
