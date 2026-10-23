@@ -361,6 +361,11 @@ services:
       # account?" step to every sign-out. This suite signs one person in at a
       # time and tests the debugger, not that switcher, so it is off.
       - STS_AUTHN_MULTIPLE_ACCOUNTS=false
+      # TRUST REALMS: iya-sts caps them at 10 (`realms.maxCount`, the default
+      # realm included), and this suite creates more than that — the
+      # federation jobs alone make eleven. iya-sts's env/docker-tests.js
+      # raises it; this stack loads env/local.js, which does not.
+      - STS_REALMS_MAX_COUNT=100000
       # ---------------------------------------------------------------------
       # THE STACK'S ANCHOR, IN THE MOCK'S TRUSTSTORE, AND IT IS NOT SYMMETRY.
       #

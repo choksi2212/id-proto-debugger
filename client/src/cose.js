@@ -47,7 +47,9 @@ var log = bunyan.createLogger({
 var LABEL_KTY = 1, LABEL_KID = 2, LABEL_ALG = 3;
 
 // Key types (RFC 9053 / the COSE Key Types registry).
-var KTY = { 1: "OKP", 2: "EC2", 3: "RSA" };
+// AKP (7) is RFC 9964's Algorithm Key Pair, which is how an ML-DSA credential
+// arrives: one public key byte string, with no curve and no coordinates.
+var KTY = { 1: "OKP", 2: "EC2", 3: "RSA", 7: "AKP" };
 
 // Curves (the COSE Elliptic Curves registry), with the JWK name each maps to.
 var CURVE = {
@@ -89,6 +91,14 @@ var ALG = {
   "-39":  { name: "PS512", kty: "RSA", hash: "SHA-512",
            webCrypto: { name: "RSA-PSS", hash: "SHA-512" },
            verify: { name: "RSA-PSS", saltLength: 64 }, derSig: false },
+  // RFC 9964. Web Crypto has no ML-DSA, so these carry `pqc` instead of
+  // Web Crypto parameters and are verified through ./pqc.
+  "-48":  { name: "ML-DSA-44", kty: "AKP", hash: null, pqc: true,
+           derSig: false },
+  "-49":  { name: "ML-DSA-65", kty: "AKP", hash: null, pqc: true,
+           derSig: false },
+  "-50":  { name: "ML-DSA-87", kty: "AKP", hash: null, pqc: true,
+           derSig: false },
 };
 
 function algorithm(coseAlg) {
@@ -167,6 +177,18 @@ function coseToJwk(coseKey) {
       n: base64url(requireBytes(coseKey, -1, "modulus")),
       e: base64url(requireBytes(coseKey, -2, "exponent")),
     };
+  } else if (kty === "AKP") {
+    // RFC 9964 section 4: -1 is the public key and -2 the private one.
+    if (coseKey.has(-2)) {
+      throw new Error("this COSE key carries private key material (label " +
+                      "-2); refusing it");
+    }
+    if (!alg) {
+      throw new Error("an AKP COSE key names its algorithm or means nothing" +
+                      "; got alg " + JSON.stringify(coseAlg));
+    }
+    jwk = { kty: "AKP", pub: base64url(requireBytes(coseKey, -1,
+        "public key")) };
   } else {
     // OKP — Ed25519 and friends.
     if (coseKey.has(-4)) {

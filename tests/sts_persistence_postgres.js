@@ -484,6 +484,12 @@ async function startMock(root, databaseUrl, label, extraEnv) {
   const env = Object.assign({}, process.env, await portEnv(httpPort),
       tlsEnvForThisNode(root), {
     STS_PERSISTENCE_MODE: "postgres",
+    // TLS STAYS ON AND ITS CERTIFICATE IS NOT VERIFIED. iya-sts verifies its
+    // database's certificate by default since 2026-10-12 (#273's reversal),
+    // and this job's postgres makes a self-signed one-day pair INSIDE its
+    // container, so there is no anchor out here to hand over; refusing to
+    // start is the right answer to that, and not what this job is about.
+    STS_DATABASE_TLS_REJECT_UNAUTHORIZED: "false",
     // NOT `STS_PERSISTENCE_DATABASE_URL`, which is the name five of its six
     // siblings would suggest and which this job spent a while getting wrong.
     // A misspelling here is QUIET: the service dials the built-in default
@@ -1453,6 +1459,7 @@ async function startMockExpectingFailure(root, databaseUrl) {
   const env = Object.assign({}, process.env, await portEnv(httpPort),
       tlsEnvForThisNode(root), {
     STS_PERSISTENCE_MODE: "postgres",
+    STS_DATABASE_TLS_REJECT_UNAUTHORIZED: "false",
     STS_DATABASE_URL: databaseUrl,
     STS_LOG_LEVEL: "warn",
     CONFIG_FILE: path.join(root, "env", "local.js")
