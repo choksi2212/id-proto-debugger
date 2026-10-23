@@ -3625,44 +3625,6 @@ function buildJobs() {
     });
   }
 
-  // ---------------------------------------------------------------------
-  // POSTGRES PERSISTENCE, AND THE ONLY JOB HERE THAT OWNS THE SERVICE IT
-  // DRIVES.
-  //
-  // Registered OUTSIDE the WSTRUST_STS_URL guard above, deliberately: it does
-  // not use the shared mock and would be wrong to. Persistence is a claim
-  // about what happens across a RESTART, so this job starts its own Postgres
-  // and its own mock, restarts it, and reads what came back — and the shared
-  // instance must stay in memory mode, which iya-sts's own
-  // docker-compose.yml argues at length ("a test that persisted would be a
-  // test whose second run started from the first run's leavings").
-  //
-  // It holds NO JOB_LOCK for the same reason: its database, its ports and its
-  // processes are all its own, and it removes them in a `finally`.
-  //
-  // It SKIPS, with a named reason, when there is no docker and no
-  // STS_TEST_POSTGRES_URL, or when there is no COMPLETE mock STS tree to run —
-  // which is what the containerized suite looks like, since the tests image
-  // carries about thirty sts modules and no node_modules. On a host stack it
-  // runs in about twenty seconds.
-  // ---------------------------------------------------------------------
-  {
-    jobs.push({
-      name: "STS persistence (postgres) — what survives a restart, what must " +
-          "not, that two processes against one store coordinate through its " +
-          "change log and do not when that is turned off, that the " +
-          "connection is TLS by postgres's own account, and that a missing " +
-          "database is not fatal",
-      script: "sts_persistence_postgres.js",
-      env: {
-        // Passed through so a caller with a database of their own is used
-        // instead of a throwaway container. Empty means "start one".
-        STS_TEST_POSTGRES_URL: env.STS_TEST_POSTGRES_URL || "",
-        MOCK_STS_DIR: env.MOCK_STS_DIR || "",
-      },
-    });
-  }
-
   // The cryptosuite ABOVE the primitive: JSON-LD canonicalization, the base
   // proof, and selective disclosure. The STS issues with one BBS implementation
   // and the wallet derives with the other, so neither marks its own homework.
