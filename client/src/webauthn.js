@@ -40,6 +40,7 @@
 var bunyan = require("bunyan");
 var cbor = require("./cbor");
 var cose = require("./cose");
+var pqc = require("./pqc");
 // The log level comes from the same configuration the pages use. A consumer
 // outside the browser bundles (a node-based test loading this module directly)
 // may not have one, so fall back to info rather than failing to load.
@@ -464,16 +465,14 @@ async function verifyAssertion(input) {
     throw new Error("no verification parameters for algorithm " + algName);
   }
 
-  var sigForVerify = signature;
-  if (spec.derSig) {
-    sigForVerify = derToRawSignature(signature, COORDINATE_BYTES[jwk.crv] ||
-        32);
+  var valid;
+  if (spec.pqc) {
+    // ML-DSA: no Web Crypto, and the signature is raw already.
+    valid = pqc.verifyWithPub(spec.name, signature, signedData,
+        base64urlToBytes(jwk.pub));
+  } else {
+    valid = await verifyWithWebCrypto(spec, jwk, signature, signedData);
   }
-
-  var key = await crypto.subtle.importKey("jwk", stripAlg(jwk), spec.webCrypto,
-      false, ["verify"]);
-  var valid = await crypto.subtle.verify(spec.verify, key, sigForVerify,
-      signedData);
   record("signature verifies against the credential public key", valid,
          algName + " over " + signedData.length +
              " bytes (authenticatorData ‖ SHA-256(clientDataJSON))");
@@ -492,6 +491,23 @@ async function verifyAssertion(input) {
     authenticatorData: authData,
     signedDataLength: signedData.length,
   };
+}
+
+// The classical algorithms: ECDSA (whose DER signature Web Crypto will not
+// take), RSA and EdDSA, all through crypto.subtle.
+async function verifyWithWebCrypto(spec, jwk, signature, signedData) {
+  log.debug("Entering verifyWithWebCrypto().");
+  var sigForVerify = signature;
+  if (spec.derSig) {
+    sigForVerify = derToRawSignature(signature, COORDINATE_BYTES[jwk.crv] ||
+        32);
+  }
+  var key = await crypto.subtle.importKey("jwk", stripAlg(jwk), spec.webCrypto,
+      false, ["verify"]);
+  var valid = await crypto.subtle.verify(spec.verify, key, sigForVerify,
+      signedData);
+  log.debug("Leaving verifyWithWebCrypto().");
+  return valid;
 }
 
 // Web Crypto rejects a JWK whose `alg` it does not recognise for the chosen

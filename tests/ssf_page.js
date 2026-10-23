@@ -647,7 +647,18 @@ async function thePageCanSignAndPushAnEvent(driver) {
   // sender to be a full SSF transmitter — rcbj/id-proto-debugger#363. The
   // inbox stores what arrives as text and verifies nothing, so what this
   // asserts is the push itself and that the token arrived whole.
-  const inbox = await openApiInbox();
+  //
+  // A DEPLOYED STATIC SITE HAS NO api, and so no inbox to push to: there the
+  // event is still built and signed in the page and checked, and the push is
+  // left out and said so, for #363's push to a federation relationship to
+  // restore.
+  const apiThere = await fetch(apiUrl + "/ssf/limits").then(function (r) {
+    return r.ok;
+  }).catch(function () {
+    return false;
+  });
+  const inbox = apiThere ? await openApiInbox() :
+      { id: "", endpoint: "https://ssf-receiver.example/events" };
   const txIssuer = "https://ssf-page-test.example/";
   await fill(driver, "ssf_tx_iss", txIssuer);
   await fill(driver, "ssf_tx_aud", inbox.endpoint);
@@ -687,6 +698,13 @@ async function thePageCanSignAndPushAnEvent(driver) {
   // same. Blanking first is what makes the wait mean "the push answered"
   // rather than "some earlier step did", and it is the pattern the status
   // hazard in tests/CLAUDE.md prescribes.
+  if (!apiThere) {
+    log.info("[transmit] OK — signed in the JavaScript engine. The push is " +
+             "not exercised: no api answers at " + apiUrl + " (a static " +
+             "site), so there is no inbox to deliver to until #363.");
+    log.debug("Leaving thePageCanSignAndPushAnEvent(). No api.");
+    return;
+  }
   await driver.executeScript(
       "document.getElementById('ssf_tx_status').value = '';");
   await click(driver, "btn_ssf_push");

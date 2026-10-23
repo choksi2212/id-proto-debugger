@@ -284,13 +284,15 @@ async function planCredentialIntoWallet(driver, held) {
     "localStorage.setItem('sdjwtvp_verifier_base_url', arguments[4]);" +
     "localStorage.setItem('sdjwtvp_verifier_jwks_url', arguments[4] + " +
         "'/oauth2/jwks');" +
-    "localStorage.setItem('vci_credential_issuer', arguments[4]);",
+    "localStorage.setItem('vci_credential_issuer', arguments[4]);" +
+    // The Verifier's website; a deployed site defaults to none.
+    "localStorage.setItem('sdjwtvp_verifier_site_url', arguments[5]);",
     held.credential, JSON.stringify(held.publicJwk),
         JSON.stringify(held.privateJwk),
     JSON.stringify({ issuer: issuerBase, configurationId: VCI_CONFIG_ID,
                    vct: EXPECTED_VCT,
                      requestedAt: new Date().toISOString() }),
-    issuerBase);
+    issuerBase, companionUrl + "/verifier");
   await driver.navigate().refresh();
   await pageBundleReady(driver);
   await driver.wait(until.elementLocated(By.id("vp_usecases")), waitTime);

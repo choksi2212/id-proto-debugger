@@ -135,8 +135,11 @@ async function startsFromTheWalletsOwnPages(driver, held) {
   await driver.executeScript(
     "window.localStorage.clear();" +
     "localStorage.setItem('sdjwtvc_credential', arguments[0]);" +
-    "localStorage.setItem('sdjwtvp_verifier_base_url', arguments[1]);",
-    JSON.stringify(held.credential), verifierBase);
+    "localStorage.setItem('sdjwtvp_verifier_base_url', arguments[1]);" +
+    // The Verifier's website; a deployed site defaults to none.
+    "localStorage.setItem('sdjwtvp_verifier_site_url', arguments[2]);",
+    JSON.stringify(held.credential), verifierBase,
+    companionUrl + "/verifier");
   await loadUrl(driver, baseUrl + "/vc-presentation-0.html");
   await pageBundleReady(driver);
   await driver.sleep(900);

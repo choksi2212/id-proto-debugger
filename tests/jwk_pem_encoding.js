@@ -1108,6 +1108,17 @@ function stsRequiresIn(file, source) {
 // with both modules absent.
 // ---------------------------------------------------------------------------
 const LAZY_STS_REQUIRES = {
+  // GUARDED rather than lazy: `authn/webauthn.js` requires these two at load,
+  // inside a try, and runs standalone without them — its own header says so,
+  // and `webauthn_cross_impl.js` loads it exactly that way. Copying them would
+  // drag the service's whole closure into the image, which is what the
+  // in-process iya-sts KDC jobs needed until they moved to iya-sts's own
+  // suite on 2026-10-23. `"guarded"` accepts a load-time require; `true`
+  // only a lazy one.
+  "authn/webauthn.js": {
+    "common/helpers.js": "guarded",
+    "common/crypto.js": "guarded",
+  },
   "common/request_pool.js": {
     "ldap/ldap_server.js": true,
     "tls/tls_server.js": true,
@@ -1317,6 +1328,12 @@ function stsModuleClosureIsCopied(dockerfile) {
       }
       if (!copied[dep]) {
         const allowed = LAZY_STS_REQUIRES[name] || {};
+        if (allowed[dep] === "guarded") {
+          log.info("[sts-closure] " + dep + " is required inside a try by " +
+            "sts/" + name + ", which runs without it; see " +
+            "LAZY_STS_REQUIRES.");
+          return;
+        }
         if (one.lazy && allowed[dep] === true) {
           log.info("[sts-closure] " + dep + " is required LAZILY by sts/" +
             name + " and is deliberately not in the image; see " +
