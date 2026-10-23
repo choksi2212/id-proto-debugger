@@ -98,6 +98,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { Command, Option } = require("commander");
 const { usernameFor } = require("./random_username.js");
+const kerberosPrincipals = require("./kerberos_principals.js");
 const registry = require("./sts_applications.js");
 const { declineToRun, mustBeReady } = require("./expectation.js");
 var appconfig = require(process.env.CONFIG_FILE);
@@ -559,7 +560,7 @@ async function preconditions() {
 
   let table;
   try {
-    const response = await fetch(stsUrl + "/krb5/principals");
+    const response = await kerberosPrincipals.principalsDocument(stsUrl);
     if (!response.ok) {
       log.debug("Leaving preconditions(). No KDC view.");
       return { ok: false, why: stsUrl + "/krb5/principals answered " +

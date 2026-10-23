@@ -1,0 +1,111 @@
+// File: kerberos_principals.js
+// ---------------------------------------------------------------------------
+// WHAT THE KERBEROS JOBS ASKED `GET /krb5/principals` FOR, ASKED OF WHERE IT
+// LIVES NOW.
+//
+// iya-sts published its KDC's principal table, its realm, its KDC port and its
+// account policy on an open demonstration page, `/krb5/principals`. #595
+// deleted that page: the table and the account policy are
+// `GET /admin-api/kerberos/principals` (paged, under the management API's
+// token, which tools/attach-admin-token.js puts on every job's /admin-api
+// calls), and the KDC port and the two shared development passwords are
+// SETTINGS (`krb5.kdcPort`, `krb5.userPassword`, `krb5.autoServicePassword`),
+// read from `GET /admin-api/config`.
+//
+// Five jobs read that document and each reads a handful of its members, so
+// this rebuilds the members they read — `realm`, `kdcPort`, `principals`,
+// `accountPolicy` (with the two passwords back in it), `realmsServed` and
+// `serviceAccount` — rather than each job learning two endpoints and a paging
+// loop. It answers in the shape of a fetch Response (`ok`, `status`,
+// `json()`), so a job's call site changes one line and its checks none.
+//
+// A SHARED MODULE AND NOT A JOB, so tests/Dockerfile carries a COPY line for
+// it like random_username.js's.
+// ---------------------------------------------------------------------------
+
+"use strict";
+
+var bunyan = require("bunyan");
+var level = "info";
+try {
+  level = require(process.env.CONFIG_FILE).LOG_LEVEL || "info";
+} catch (e) {
+  level = "info";
+}
+var log = bunyan.createLogger({ name: "kerberos_principals", level: level });
+
+// The most rows one page may carry (iya-sts's MAX_ROWS ceiling clamps a
+// larger ask anyway); the loop below reads every page.
+var PER = 500;
+
+async function getJson(url) {
+  log.debug("Entering getJson(). " + url);
+  var response = await fetch(url, { headers: { Accept: "application/json" } });
+  var body = null;
+  try {
+    body = await response.json();
+  } catch (e) {
+    log.debug("Caught in getJson(): " + e.message);
+    body = null;
+  }
+  log.debug("Leaving getJson(). " + response.status);
+  return { status: response.status, ok: response.ok, body: body };
+}
+
+// One setting's value off GET /admin-api/config, whose rows are under
+// groups[].settings.
+function settingOf(config, key) {
+  log.debug("Entering settingOf(). " + key);
+  var found;
+  ((config && config.groups) || []).forEach(function (group) {
+    (group.settings || []).forEach(function (row) {
+      if (row.key === key && found === undefined) {
+        found = row.value !== undefined ? row.value : row.text;
+      }
+    });
+  });
+  log.debug("Leaving settingOf().");
+  return found;
+}
+
+// The document, as a fetch-shaped answer.
+async function principalsDocument(stsUrl) {
+  log.debug("Entering principalsDocument().");
+  var base = String(stsUrl).replace(/\/+$/, "") + "/admin-api";
+  var first = await getJson(base + "/kerberos/principals?per=" + PER);
+  if (!first.ok || !first.body) {
+    log.debug("Leaving principalsDocument(). " + first.status);
+    return { ok: false, status: first.status,
+      json: async function () {
+        return first.body;
+      } };
+  }
+  var view = first.body;
+  var rows = (view.database || []).slice();
+  var pages = Number((view.databasePaging || {}).pages || 1);
+  for (var page = 2; page <= pages; page++) {
+    var more = await getJson(base + "/kerberos/principals?per=" + PER +
+                             "&databasePage=" + page);
+    rows = rows.concat((more.body && more.body.database) || []);
+  }
+  var config = (await getJson(base + "/config")).body || {};
+  var policy = Object.assign({}, view.accountPolicy || {});
+  policy.userPassword = settingOf(config, "krb5.userPassword");
+  policy.autoServicePassword = settingOf(config, "krb5.autoServicePassword");
+  var doc = {
+    realm: view.realm,
+    kdcPort: Number(settingOf(config, "krb5.kdcPort") || 88),
+    principals: rows,
+    accountPolicy: policy,
+    realmsServed: view.realmsServed || [],
+    serviceAccount: view.acceptor || null,
+    kerberos: view.kerberos || null
+  };
+  log.debug("Leaving principalsDocument(). " + rows.length + " principals.");
+  return { ok: true, status: 200,
+    json: async function () {
+      return doc;
+    } };
+}
+
+module.exports = { principalsDocument: principalsDocument };

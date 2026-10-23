@@ -46,6 +46,7 @@ const { Builder, By, until } = require("selenium-webdriver");
 const chrome = require("selenium-webdriver/chrome");
 const { Command, Option } = require("commander");
 const browserFlags = require("./browser_flags.js");
+const kerberosPrincipals = require("./kerberos_principals.js");
 const { mustBeReady } = require("./expectation.js");
 const registry = require("./sts_applications.js");
 const { usernameFor, requireKnownOrCreatable } =
@@ -144,7 +145,7 @@ async function serviceKeyFor(principalName) {
   const answer = { salt: null, password: servicePassword, autoCreated: false,
       known: [] };
   try {
-    const response = await fetch(stsUrl + "/krb5/principals");
+    const response = await kerberosPrincipals.principalsDocument(stsUrl);
     const body = await response.json();
     answer.known = (body.principals || []).map(function (p) {
       return String(p.principal || "").split("@")[0];
@@ -172,7 +173,7 @@ async function serviceKeyFor(principalName) {
 async function preconditions() {
   log.debug("Entering preconditions().");
   try {
-    const principals = await fetch(stsUrl + "/krb5/principals");
+    const principals = await kerberosPrincipals.principalsDocument(stsUrl);
     if (!principals.ok) {
       log.debug("Leaving preconditions(). No KDC.");
       return {

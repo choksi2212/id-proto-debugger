@@ -104,6 +104,7 @@ const chrome = require("selenium-webdriver/chrome");
 const assert = require("assert");
 const { Command, Option } = require("commander");
 const { usernameFor } = require("./random_username.js");
+const kerberosPrincipals = require("./kerberos_principals.js");
 const browserFlags = require("./browser_flags.js");
 const { mustBeReady } = require("./expectation.js");
 const registry = require("./sts_applications.js");
@@ -292,7 +293,7 @@ async function subjectOf(name) {
 async function preconditions() {
   log.debug("Entering preconditions().");
   try {
-    const principalsResponse = await fetch(stsUrl + "/krb5/principals");
+    const principalsResponse = await kerberosPrincipals.principalsDocument(stsUrl);
     if (!principalsResponse.ok) {
       log.debug("Leaving preconditions(). No KDC.");
       return { ok: false, why: stsUrl + "/krb5/principals answered " +
