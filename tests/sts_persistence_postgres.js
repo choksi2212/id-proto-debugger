@@ -958,7 +958,10 @@ async function writeSomethingOfEachKind(instance) {
   // 1. THE REALM REGISTRY, with an override of its own on the row.
   await post(instance, "/admin-api/realms/create", {
     id: made.realm, name: "Postgres persistence test",
-    overrides: { "saml2.entityId": "urn:pgtest:" + made.realm }
+    // A trust domain of its own: a string, realm-settable, and read by
+    // nothing else this job does. (It was saml2.entityId, which iya-sts
+    // removed on 2026-10-08, #523.)
+    overrides: { "spiffe.trustDomain": made.realm + ".pgtest.example" }
   });
 
   // 2. THE DIRECTORY — a person and an application, and the application in the
@@ -1103,10 +1106,10 @@ async function everythingThatPersistsComesBack(instance, made) {
     "holds " + JSON.stringify((realms.realms || []).map(function (one) {
       return one.id;
     })));
-  const entityId = ((row.settings || []).filter(function (setting) {
-    return setting.key === "saml2.entityId";
+  const trustDomain = ((row.settings || []).filter(function (setting) {
+    return setting.key === "spiffe.trustDomain";
   })[0] || {}).value;
-  assert.strictEqual(entityId, "urn:pgtest:" + made.realm,
+  assert.strictEqual(trustDomain, made.realm + ".pgtest.example",
     "and the override it was created with should be on it; the row carries " +
     JSON.stringify(row.settings));
 
