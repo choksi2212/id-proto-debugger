@@ -289,26 +289,39 @@ async function loadIdpMetadata(driver, metadataUrl, metadataFile) {
   log.debug("Leaving loadIdpMetadata().");
 }
 
-// 1.1: THE DESCRIPTOR DECIDES THE VERSION. Asserted rather than assumed,
-// because everything after it depends on the page having noticed — and because
-// a page left on 2.0 in front of this document builds an <AuthnRequest>, posts
-// it at an inter-site transfer service, and reports the refusal as though the
-// identity provider were at fault.
+// 1.1: THE VERSION IN FORCE IS 1.1, by either of the two routes the page has.
+// A descriptor naming only SAML 1.1 moves the selector itself and says so on
+// the status line. One naming BOTH versions — iya-sts's, since its #523 put
+// SAML 2.0 and SAML 1.1 under one entity in one document — leaves the
+// reader's selection standing, and this job selected 1.1 before loading it
+// (selectSaml11()), as a reader facing such an identity provider does.
+// Asserted rather than assumed, because a page left on 2.0 here builds an
+// <AuthnRequest>, posts it at an inter-site transfer service, and reports the
+// refusal as though the identity provider were at fault.
 async function assertVersionCameFromMetadata(driver) {
   log.debug("Entering assertVersionCameFromMetadata().");
   var status =
       await driver.findElement(By.id("saml_metadata_status"))
         .getAttribute("value");
-  assert(status.indexOf("1.1") >= 0,
-    "loading a SAML 1.1 descriptor should say on the status line that it " +
-    "moved the Protocol Version selector; it said: " + status);
   var version =
       await driver.findElement(By.id("saml_version")).getAttribute("value");
   assert.strictEqual(version, "1.1",
-    "the Protocol Version selector should have been set to 1.1 by the " +
-    "metadata load (protocolSupportEnumeration says " +
-    "urn:oasis:names:tc:SAML:1.1:protocol), and is " + version + ".");
+    "the Protocol Version selector should be SAML 1.1 after the metadata " +
+    "load — set by a 1.1-only descriptor, or left as this job selected it " +
+    "by one naming both versions — and is " + version + ". The status " +
+    "line said: " + status);
   log.debug("Leaving assertVersionCameFromMetadata().");
+}
+
+// What a reader does before loading the metadata of an identity provider
+// that speaks both versions: choose the one they mean.
+async function selectSaml11(driver) {
+  log.debug("Entering selectSaml11().");
+  await driver.wait(until.elementLocated(By.id("saml_version")), waitTime);
+  await driver.executeScript(
+    "var s = document.getElementById('saml_version'); s.value = '1.1';" +
+    "s.dispatchEvent(new Event('change'));");
+  log.debug("Leaving selectSaml11().");
 }
 
 // 1.1: A SAML 1.1 identity provider has ONE endpoint — the inter-site transfer
@@ -665,6 +678,7 @@ async function saml11Activities(driver, metadataUrl, spEntityId, user, binding,
            ").");
   await loadUrl(driver, baseUrl + "/saml_request.html");
 
+  await selectSaml11(driver);
   await loadIdpMetadata(driver, metadataUrl, metadataFile);
   await assertVersionCameFromMetadata(driver);
   await assertEndpointsFromMetadata(driver);

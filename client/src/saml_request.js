@@ -149,12 +149,24 @@ var SAML11 = {
   protocol: 'urn:oasis:names:tc:SAML:1.1:protocol'
 };
 var SAML20_PROTOCOL = 'urn:oasis:names:tc:SAML:2.0:protocol';
+var SAML20_SOAP = 'urn:oasis:names:tc:SAML:2.0:bindings:SOAP';
 
 // Set by parseMetadata() when a loaded document moved the Protocol Version
 // selector, and read by applyMetadata() so the status line says so. A metadata
 // load is the only thing here that changes a selector the user set, and a
 // change nothing announces is one that reads as this page ignoring them.
 var metadataVersionSwitch = '';
+
+// THE ENDPOINTS THE LAST LOADED DOCUMENT NAMED, PER PROTOCOL VERSION. One
+// identity provider may speak both versions under ONE entity — iya-sts has
+// since its #523 — and then its document carries SAML 2.0's endpoints AND SAML
+// 1.1's: the 2.0 SingleSignOnService per binding beside the 1.1 inter-site
+// transfer service, and two ArtifactResolutionServices told apart by binding.
+// Which set belongs in the fields is the version in force, which the document
+// cannot decide when it names both, so both sets are kept and the selector
+// chooses — at the load, and again whenever the reader changes it.
+var METADATA_ENDPOINTS_KEY = STORE_PREFIX + "metadata_endpoints";
+var metadataEndpoints = null;
 
 // The selected protocol version, and the two questions asked of it everywhere
 // below. `samlVersion()` never returns '' — an unreadable selector falls back
@@ -520,14 +532,11 @@ function parseMetadata(xmlText) {
       if (!its) its = loc;
     }
   }
-  if (version === '1.1' && its) {
-    ssoPost = its;
-    ssoRedirect = its;
-    ssoArtifact = its;
-  }
-  setVal('saml_sso_post', ssoPost);
-  setVal('saml_sso_redirect', ssoRedirect);
-  setVal('saml_sso_artifact', ssoArtifact);
+  var endpoints = {
+    '2.0': { post: ssoPost, redirect: ssoRedirect, artifact: ssoArtifact,
+             ars: '' },
+    '1.1': { post: its, redirect: its, artifact: its, ars: '' }
+  };
 
   // SLO endpoints by binding. A SAML 1.1 descriptor has none — the protocol has
   // no Single Logout — and the loop below simply finds nothing, which clears
@@ -551,9 +560,35 @@ function parseMetadata(xmlText) {
   // the second one and will not look for it inside the IDPSSODescriptor. Either
   // will do for resolving an artifact, so the second is a fallback rather than
   // a separate field.
-  var ars = tags(idp, 'ArtifactResolutionService')[0] ||
-      tags(doc, 'AttributeService')[0];
-  setVal('saml_ars', ars ? (ars.getAttribute('Location') || '') : '');
+  //
+  // A document describing BOTH versions lists one per version, told apart by
+  // binding (SAML 2.0's SOAP binding and SAML 1.0's), and taking the first
+  // would resolve a SAML 1.1 artifact at SAML 2.0's resolver. So each
+  // version takes the one bound for it; a service bound with neither — a
+  // document that names no binding — serves whichever version is in force.
+  var arsList = tags(idp, 'ArtifactResolutionService');
+  for (var a = 0; a < arsList.length; a++) {
+    var ab = arsList[a].getAttribute('Binding') || '';
+    var aloc = arsList[a].getAttribute('Location') || '';
+    if (ab === SAML11.soap) {
+      endpoints['1.1'].ars = endpoints['1.1'].ars || aloc;
+    } else if (ab === SAML20_SOAP) {
+      endpoints['2.0'].ars = endpoints['2.0'].ars || aloc;
+    } else {
+      endpoints['1.1'].ars = endpoints['1.1'].ars || aloc;
+      endpoints['2.0'].ars = endpoints['2.0'].ars || aloc;
+    }
+  }
+  var attrService = tags(doc, 'AttributeService')[0];
+  if (!endpoints['1.1'].ars && attrService) {
+    endpoints['1.1'].ars = attrService.getAttribute('Location') || '';
+  }
+  // A document with no SAML 1.1 profile names no inter-site transfer service,
+  // and then its 1.1 set is empty and says so rather than borrowing 2.0's.
+  metadataEndpoints = endpoints;
+  if (window.localStorage) {
+    localStorage.setItem(METADATA_ENDPOINTS_KEY, JSON.stringify(endpoints));
+  }
 
   // NameIDFormat list.
   var nifs = tags(idp, 'NameIDFormat');
@@ -600,6 +635,9 @@ function parseMetadata(xmlText) {
   } else {
     metadataVersionSwitch = '';
   }
+  // The endpoints for the version now in force: the document's when it named
+  // one, otherwise the reader's selection.
+  applyMetadataEndpoints();
   applyVersionAvailability();
   log.debug("Leaving parseMetadata().");
 }
@@ -765,11 +803,42 @@ function validateHint() {
   return ok;
 }
 
+// Writes the last loaded document's endpoints for the selected protocol
+// version into the SSO and artifact resolution fields. Nothing is written when
+// no document has been loaded — fields the reader typed by hand stay theirs —
+// or for SAML 1.0, which this page builds nothing for.
+function applyMetadataEndpoints() {
+  log.debug("Entering applyMetadataEndpoints().");
+  var endpoints = metadataEndpoints;
+  if (!endpoints && window.localStorage) {
+    try {
+      endpoints = JSON.parse(localStorage.getItem(METADATA_ENDPOINTS_KEY) ||
+                             'null');
+    } catch (e) {
+      log.debug("Caught in applyMetadataEndpoints(): " + e.message);
+      endpoints = null;
+    }
+  }
+  var set = endpoints && endpoints[samlVersion()];
+  if (!set) {
+    log.debug("Leaving applyMetadataEndpoints(). Nothing to apply.");
+    return;
+  }
+  setVal('saml_sso_post', set.post || '');
+  setVal('saml_sso_redirect', set.redirect || '');
+  setVal('saml_sso_artifact', set.artifact || '');
+  setVal('saml_ars', set.ars || '');
+  log.debug("Leaving applyMetadataEndpoints().");
+}
+
 function onVersionChange() {
   log.debug("Entering onVersionChange(). version=" + samlVersion());
   // A version the user chose is not a version a metadata load chose, so the
   // note that says a load moved the selector stops being true here.
   metadataVersionSwitch = '';
+  // A document naming both versions filled the fields for the version that
+  // was selected when it loaded; the other set is put in now.
+  applyMetadataEndpoints();
   applyVersionAvailability();
   saveState();
   log.debug("Leaving onVersionChange().");

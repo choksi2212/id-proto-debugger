@@ -1108,6 +1108,14 @@ async function driveSamlTier(driver, spBase) {
                  { timeout: waitTime * 5 });
   await waitForPageBundle(driver);
 
+  // The version is chosen BEFORE the load, as a reader facing an identity
+  // provider that speaks both does: iya-sts's document names SAML 2.0 and
+  // SAML 1.1 under one entity since its #523, and a document naming both
+  // leaves the selection standing (and fills the endpoints for it).
+  await driver.executeScript(
+    "var s = document.getElementById('saml_version'); s.value = arguments[0];" +
+    "s.dispatchEvent(new Event('change'));",
+    APP_PROTOCOL === "saml2" ? "2.0" : "1.1");
   await setField(driver, "saml_metadata_url", metadataUrl);
   await clickByValue(driver, "Load Metadata");
   await waitForValue(driver, By.id("saml_metadata_status"),
@@ -1115,11 +1123,10 @@ async function driveSamlTier(driver, spBase) {
     "Realm 1's " + LABELS[APP_PROTOCOL] + " metadata at " + metadataUrl +
     " was not loaded and parsed by the page.");
 
-  // THE DESCRIPTOR DECIDES THE VERSION, and it is asserted rather than assumed
-  // because everything after it depends on the page having noticed: a page
-  // left on 2.0 in front of a 1.1 document builds an <AuthnRequest>, posts it
-  // at an inter-site transfer service, and reports the refusal as though the
-  // identity provider were at fault.
+  // THE VERSION IN FORCE, asserted rather than assumed because everything
+  // after it depends on it: a page left on 2.0 in front of a 1.1 relying party
+  // builds an <AuthnRequest>, posts it at an inter-site transfer service, and
+  // reports the refusal as though the identity provider were at fault.
   const version = await driver.findElement(By.id("saml_version"))
     .getAttribute("value");
   assert.strictEqual(String(version),
