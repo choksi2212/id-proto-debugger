@@ -200,6 +200,12 @@ This is a nuclear option to cleanup docker. You may not want to do this if you h
 On other systems, the commands needed to start the debugger in a local docker container will be similar. The docker Sinatra/Ruby runtime will have to be able to establish connections to remote IdP endpoint (whether locally in other docker containers, on the host VM, or over the network/internet). On the test system, it was necessary to add "--net=host" to the "docker run" args. The network connectivity details for docker may vary from platform-to-platform.
 
 ### Running
+**Step-by-step guides with screenshots** for every OAuth2 grant and OIDC flow
+are in [docs/oauth2-oidc](docs/oauth2-oidc/index.md):
+[OAuth 2.0 authorization grants](docs/oauth2-oidc/oauth2-grants.md) and
+[OpenID Connect authentication flows](docs/oauth2-oidc/oidc-flows.md). The
+summary below is the short version.
+
 * Open your favorite browser and enter "https://localhost:3000" in the address bar.
 * Choose the OAuth2 Grant or OIDC Flow that you want to test.
 * Enter the Authorization Endpoint.

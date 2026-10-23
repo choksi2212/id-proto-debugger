@@ -149,6 +149,14 @@ COPY tests/sts_sign_out.js ./
 # every module a scheduled script requires, this one included.
 COPY tests/console_signin.js ./
 
+# THE DOCUMENTATION SCREENSHOT HELPER, required by the OAuth2 / OIDC jobs that
+# photograph the screens docs/oauth2-oidc/ walks through (oauth2_*.js,
+# oidc_flows.js, oauth2_auth_style.js). It does nothing unless
+# DOC_SCREENSHOT_DIR is set, and nothing here sets it — but the require runs
+# on every job, so without this line all of them die with MODULE_NOT_FOUND in
+# a tenth of a second while every host run stays green.
+COPY tests/doc_screenshots.js ./
+
 # THE FEDERATION GRID — one parameterised script that run-report schedules
 # forty-nine times, once per combination of application protocol, federation
 # protocol and authentication mechanism — and the management-API client it and

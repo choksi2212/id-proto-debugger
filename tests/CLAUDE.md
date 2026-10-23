@@ -112,6 +112,33 @@ it as a token that never appeared.
 
 **What each individual test covers is in `docs/test-suite-map.md`** — 24 files' worth of notes, including which services each needs and what gates or skips it. Read it before changing a test you did not write, or before adding one that overlaps. What follows here is the part that applies to **every** test in the suite, and each item below has already cost a run.
 
+## Some jobs also take the documentation's screenshots
+
+`docs/oauth2-oidc/` is the user guide to the OAuth2 / OIDC workflow, and every
+picture in it is taken by the job that drives that screen:
+`oauth2_authorization_code.js`, `oauth2_implicit.js`,
+`oauth2_resource_owner_password_credentials_grant.js`,
+`oauth2_client_credentials.js`, `oauth2_device_authorization.js`,
+`oauth2_token_exchange.js`, `oauth2_auth_style.js` (the refresh pictures) and
+`oidc_flows.js`, plus the four helpers in `common/tests.js` they share, which
+take `snap` as an injected option. **`tests/doc_screenshots.js` does nothing
+unless `DOC_SCREENSHOT_DIR` is set**, and no launcher sets it, so an ordinary
+run takes no picture, writes no file and never resizes a window; it is a
+module and not a job, so it has its own `COPY` line in `tests/Dockerfile`.
+Three rules for anyone touching those jobs:
+
+* **A picture never fails a test.** `snap()` logs and swallows every error.
+* **A `snap` call goes where the screen is in the state the guide describes**
+  — after the fields are typed and before the button is pressed — and is named
+  `NN-step` under a per-job prefix (`setPrefix()`), because the file names are
+  what the markdown links to. Renaming one breaks an image in the guide.
+* **Waiting for something only so it can be photographed is gated on
+  `docShots.enabled()`**, as `oidc_flows.js`'s consent-screen wait is: an
+  ordinary run must not pay for it.
+
+How to regenerate the pictures, and the mock STS settings each job needs for
+it, is at the foot of `docs/oauth2-oidc/index.md`.
+
 ## A TEST THAT DOES NOT RUN IS NOT A PASSING TEST
 
 This is the rule that costs a run most often here, and this file already
@@ -399,6 +426,8 @@ Two things that launcher must get right, and both were missing until 2026-07-30 
 **And headless at all is not optional, in any browser test, for any reason.** That is a separate rule from the one above and it is the one that gets missed, because `browserFlags.addBrowserAccessFlags(options, baseUrl)` reads like it configures the browser: it does not, it deals with the secure-context and private-network hazards only and never touches headless mode. A test copied from a neighbour can therefore carry the flags and not the flag — `kerberos_delegation_page.js` did, and popped a real window on every run of the suite from the day it was written. That is a stolen desktop locally and a dead run everywhere else: a CI runner and the tests container have no display, so the session fails at `session not created` naming the page the test was about to visit. Keeping a `headless` variable so a human can watch a run is fine and customary here; initializing it `false` is not, because then every unattended run opens windows. **`tests/browser_tests_headless.js` asserts both** over this directory's own sources — a file with `new Builder()` and `.forBrowser()` must pass `--headless` through `addArguments()`, and any `headless` variable it declares must start out `true`.
 
 **And a test that clicks a Download button writes a real file, which lands in the developer's home directory unless something says otherwise.** On a host run (`./local-run-tests.sh`, `./remote-run-tests.sh`) the browser is the developer's own Chrome and its default download directory is `~/Downloads`. **Nothing fails when a test writes there**: the assertion every download test in this suite makes is on the page's own status line — `Downloaded rsa-keys.pem` — which reads the same wherever the file went, so the run is green and the only evidence is somebody else's home directory filling up with key material. By 2026-09-03 this one held **71 copies each of `ml-kem-keys (N).pem` and `ecies-keys.jwk (N).json`**, one pair per run since 2026-08-27, beside the keystore matrices from before the first fix. **It was fixed once already and per test, which is exactly why it came back**: `jwt_tools.js` and `digital_signature.js` each grew a throwaway temp directory, four Chrome user preferences and a CDP call of their own, and then `encryption_tools.js` arrived with a key-download section built on the same `client/src/key_material.js` and nothing to tell whoever wrote it that four lines in two other files existed. A rule that lives in the tests that remembered it protects only those tests. It now lives in **section (6) of `browser_flags.js`** and is applied from `addBrowserAccessFlags()` and `addStsTrustFlags()` — the two functions all 73 driver-building tests here already call — so a new test is covered without knowing any of this. Two things follow for anything you write. **Do not call `options.setUserPreferences()`**: selenium's `chromium.Options` ASSIGNS the map it is given rather than merging into it, so a second caller silently replaces the download directory and puts that test's files straight back in `~/Downloads`; pass what you need as `browserFlags.addDownloadDirFlags(options, extra)` instead. And if your test clicks a Download button, add **`await browserFlags.pinDownloadDir(driver)`** after the `Builder` — the same instruction to the browser that is already running, which is belt and braces on the Chrome and chromedriver pinned today and is what still holds if one of them ever reads the profile differently. **`tests/download_dir_pinned.js` asserts all of it** over this directory's own sources, and it is the check that fails rather than the home directory that fills up.
+
+**And the same preference map turns the PASSWORD MANAGER off, because its bubble eats input.** After a sign-in form is submitted with a password, Chrome sometimes offers to save it, and that bubble takes the window's activation: every native click and keystroke after it is reported done by chromedriver and never reaches the page — no mousedown, no keydown, not even to a capture listener on `document`. It is intermittent (4 of 18 `oidc_flows.js` runs on 2026-10-21, against the mock STS) and it lands on whatever the test does next, so it reads as a consent screen whose Allow never registered, a radio that "did not take", or a field typed into that stays empty. The tell is `document.hasFocus()` returning false on the page after the sign-in; `Emulation.setFocusEmulationEnabled` and `Page.bringToFront` do NOT recover it. Section (6) of `browser_flags.js` sets `credentials_enable_service` and `profile.password_manager_enabled` to false for every test that calls `addBrowserAccessFlags()` or `addStsTrustFlags()` — 0 of 18 lost focus with that — so the rule above about never calling `setUserPreferences()` yourself protects this too. Do not answer the symptom with a retry: a second submit of the consent form replays its consent id, which the service refuses.
 
 **A section that clears `localStorage` must restore it.** `tests/sd_jwt_vc_issuance.js` runs one browser session through the whole workflow and then over a dozen further sections, several of which need an EMPTY page to measure or to check a pane's initial state — and the sections after them run on the state the workflow left behind. `preservingLocalStorage()` returns a restore function for exactly this; `metadataSignatureValidation()` and `presentationHandoff()` do the same by hand. Clearing without restoring does not fail where the mistake is: it fails hundreds of lines later in `presentationHandoff()` with "no credential in storage", which reads as a broken issuance. That assertion now names the likely cause and lists the keys it did find.
 

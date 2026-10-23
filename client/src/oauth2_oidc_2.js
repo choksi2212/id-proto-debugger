@@ -487,7 +487,10 @@ function renderOauthDpopStatus(accessToken) {
                "is bound to this key as well as the token.");
   }
   var verdict = oauthDpop.bindingVerdict(accessToken);
-  if (verdict.state !== "off") {
+  if (verdict.state === "pending") {
+    // Not a finding either way, so neither colour.
+    lines.push(verdict.text);
+  } else if (verdict.state !== "off") {
     lines.push("<span class='" + (verdict.state === "bound" ?
                "dbg-good" : "dbg-bad") + "'>" +
                verdict.text + "</span>");
@@ -3753,6 +3756,19 @@ $(document).ready(function() {
     recalculateTokenRequestDescription);
   $("#customTokenParametersCheck-no").on("click",
     recalculateTokenRequestDescription);
+  // The Token Request and Refresh Request previews follow their fields as
+  // they are typed in. Until 2026-10-21 nothing bound them at all: the
+  // preview was drawn on load and on a radio click, so a client id typed into
+  // the form was not in the "request Get Token will send" until something
+  // else redrew it. `input` fires after the value changes and for a paste or
+  // a delete as well as a keystroke; `change` covers anything else.
+  $("#token_client_id, #token_client_secret, #token_scope, " +
+    "#token_redirect_uri, #token_resource, #token_username, " +
+    "#token_password, #code, #device_code, #token_pkce_code_verifier")
+    .on("input change", recalculateTokenRequestDescription);
+  $("#refresh_refresh_token, #refresh_client_id, #refresh_client_secret, " +
+    "#refresh_scope")
+    .on("input change", recalculateRefreshRequestDescription);
 
   loadValuesFromLocalStorage();
   enforceBackendAvailability();
@@ -3893,7 +3909,7 @@ $(document).ready(function() {
   useRevocationFrontEnd = $("#revocation_initiateFromFrontEnd").is(":checked");
   $("#revocation_token, #revocation_revocation_endpoint, " +
     "#revocation_client_id, #revocation_client_secret")
-    .on("keyup change", recalculateRevocationRequestDescription);
+    .on("input change", recalculateRevocationRequestDescription);
   $("#revocation_token_type_hint").on("change",
     recalculateRevocationRequestDescription);
   // Delegated so it also fires for the dynamically-rendered "Revoke Token"
@@ -3932,7 +3948,7 @@ $(document).ready(function() {
     "#tokenexchange_actor_token, #tokenexchange_resource, " +
     "#tokenexchange_audience, #tokenexchange_scope, " +
     "#tokenexchange_client_id, #tokenexchange_client_secret")
-    .on("keyup change", recalculateTokenExchangeRequestDescription);
+    .on("input change", recalculateTokenExchangeRequestDescription);
   $("#tokenexchange_subject_token_type, #tokenexchange_actor_token_type, " +
     "#tokenexchange_requested_token_type")
     .on("change", recalculateTokenExchangeRequestDescription);
@@ -5334,9 +5350,11 @@ function generateCustomParametersListUI()
         i).val(localStorage.getItem("customTokenParameterName-" + i));
       $("#customTokenParameterValue-" +
         i).val(localStorage.getItem("customTokenParameterValue-" + i));
-      $("#customTokenParameterName-" + i).on("keypress",
+      // `input`, not `keypress`, which fires before the character lands
+      // and so left the preview one keystroke behind.
+      $("#customTokenParameterName-" + i).on("input change",
         recalculateTokenRequestDescription);
-      $("#customTokenParameterValue-" + i).on("keypress",
+      $("#customTokenParameterValue-" + i).on("input change",
         recalculateTokenRequestDescription);
 
     }
