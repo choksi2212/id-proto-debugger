@@ -46,6 +46,8 @@ const chrome = require("selenium-webdriver/chrome");
 const logging = require("selenium-webdriver/lib/logging");
 const assert = require("assert");
 const browserFlags = require("./browser_flags.js");
+// startVerification() and verificationResult(), iya-sts's Verifier doors.
+var vpCommon = require("./jwt_vc_json_common.js");
 const crypto = require("crypto");
 const { Command, Option } = require('commander');
 const { loadUrl } = require("./page_load.js");
@@ -362,21 +364,10 @@ function postPresentation(responseUri, state, presentation) {
 // receives.
 async function freshRequest(byReference) {
   log.debug("Entering freshRequest(). byReference=" + !!byReference);
-  var r = await fetch(issuerBase + "/oid4vp/start?format=" +
-      encodeURIComponent(FORMAT) + (byReference ? "&by=reference" : ""),
-    { redirect: "manual" });
-  var location = r.headers.get("location");
-  assert.ok(location,
-            "the verifier should redirect the wallet with its request.");
-  var query = location.slice(location.indexOf("?") + 1);
-  var params = {};
-  query.split("&").forEach(function (pair) {
-    var eq = pair.indexOf("=");
-    params[decodeURIComponent(pair.slice(0, eq))] =
-           decodeURIComponent(pair.slice(eq + 1));
-  });
-  log.debug("Leaving freshRequest(). state=" + params.state);
-  return { params: params, location: location };
+  var request = await vpCommon.startVerification(issuerBase, FORMAT,
+                                                 byReference);
+  log.debug("Leaving freshRequest(). state=" + request.params.state);
+  return { params: request.params, location: request.location };
 }
 
 // The claim names a request actually asks for, off the wire. The last element
@@ -447,8 +438,7 @@ async function pinVerifierRequest() {
 
 async function verdictFor(state) {
   log.debug("Entering verdictFor().");
-  var r = await httpJson(issuerBase + "/oid4vp/result/" +
-      encodeURIComponent(state));
+  var r = await vpCommon.verificationResult(issuerBase, state);
   assert.ok(r.ok, "the verifier should report what it decided, got HTTP " +
             r.status);
   log.debug("Leaving verdictFor().");

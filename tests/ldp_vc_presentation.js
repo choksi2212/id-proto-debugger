@@ -106,19 +106,10 @@ function severeErrors(driver) {
 
 async function freshRequest() {
   log.debug("Entering freshRequest().");
-  const r = await fetch(verifierBase + "/oid4vp/start?format=ldp_vc",
-      { redirect: "manual" });
-  const location = r.headers.get("location");
-  assert.ok(location,
-            "the verifier should redirect the wallet with its ldp_vc request.");
-  const params = {};
-  location.slice(location.indexOf("?") + 1).split("&").forEach(function (pair) {
-    const eq = pair.indexOf("=");
-    params[decodeURIComponent(pair.slice(0, eq))] =
-           decodeURIComponent(pair.slice(eq + 1));
-  });
+  const request = await common.startVerification(verifierBase, "ldp_vc",
+                                                 false);
   log.debug("Leaving freshRequest().");
-  return { params: params, query: location.split("?")[1] };
+  return { params: request.params, query: request.query };
 }
 
 // ---------------------------------------------------------------------------
@@ -465,8 +456,8 @@ async function test() {
         state: second.params.state
       }).toString()
     });
-    const result = await common.httpJson(verifierBase + "/oid4vp/result/" +
-      encodeURIComponent(second.params.state));
+    const result = await common.verificationResult(verifierBase,
+      second.params.state);
     const v = (result.body || {}).verdict || {};
     assert.strictEqual(v.ok, false,
       "a proof derived for one request must be refused by another — the " +

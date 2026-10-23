@@ -506,30 +506,65 @@ async function plantIntoWallet(driver, opts) {
   log.debug("Leaving plantIntoWallet().");
 }
 
-// A fresh Authorization Request from the mock verifier, asking for jwt_vc_json.
-async function freshJwtVcJsonRequest(verifierBase, byReference) {
-  log.debug("Entering freshJwtVcJsonRequest(). byReference=" + !!byReference);
-  const query = ["format=" + encodeURIComponent(FORMAT)];
-  if (byReference) query.push("by=reference");
-  const r = await fetch(verifierBase + "/oid4vp/start?" + query.join("&"),
-      { redirect: "manual" });
-  const location = r.headers.get("location");
+// STARTING A VERIFICATION, AND READING WHAT WAS DECIDED, AT iya-sts's OWN
+// DOORS. They were the demonstration Verifier's `GET /oid4vp/start` (a 303 to
+// the wallet carrying the request) and `GET /oid4vp/result/:state`, which
+// iya-sts #591/#594 moved to its development companion; the doors every
+// starter uses now are `POST /admin-api/verifications/start` — which answers
+// the same wallet URL as JSON (`walletUrl`, the web wallet's page with the
+// request on its query string) — and `GET /admin-api/verifications?state=`,
+// whose answer carries the old result's members (`state`, `nonce`,
+// `requested`, `received`, `verdict`) plus `found`. The management API's
+// token is put on both by tools/attach-admin-token.js.
+async function startVerification(verifierBase, format, byReference) {
+  log.debug("Entering startVerification(). format=" + format +
+            " byReference=" + !!byReference);
+  const asked = { format: format, by: byReference ? "reference" : "value" };
+  const r = await fetch(verifierBase + "/admin-api/verifications/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json",
+               Accept: "application/json" },
+    body: JSON.stringify(asked)
+  });
+  const body = await r.json().catch(function () {
+    return null;
+  });
+  const location = body && body.ok ? String(body.walletUrl || "") : "";
   assert.ok(location,
-            "the verifier should redirect the wallet with its request.");
+    "the Verifier should start a " + format + " verification and name the " +
+    "wallet URL carrying its request; POST /admin-api/verifications/start " +
+    "answered " + r.status + ": " + JSON.stringify(body).slice(0, 300));
   const params = {};
   location.slice(location.indexOf("?") + 1).split("&").forEach(function (pair) {
     const eq = pair.indexOf("=");
     params[decodeURIComponent(pair.slice(0, eq))] =
            decodeURIComponent(pair.slice(eq + 1));
   });
-  log.debug("Leaving freshJwtVcJsonRequest(). state=" + params.state);
-  return { params: params, location: location };
+  log.debug("Leaving startVerification(). state=" + params.state);
+  return { params: params, location: location,
+           query: location.split("?")[1] || "" };
+}
+
+async function verificationResult(verifierBase, state) {
+  log.debug("Entering verificationResult().");
+  const r = await httpJson(verifierBase + "/admin-api/verifications?state=" +
+      encodeURIComponent(state));
+  log.debug("Leaving verificationResult(). " + r.status);
+  return r;
+}
+
+// A fresh Authorization Request from iya-sts's Verifier, asking for
+// jwt_vc_json.
+async function freshJwtVcJsonRequest(verifierBase, byReference) {
+  log.debug("Entering freshJwtVcJsonRequest(). byReference=" + !!byReference);
+  const request = await startVerification(verifierBase, FORMAT, byReference);
+  log.debug("Leaving freshJwtVcJsonRequest(). state=" + request.params.state);
+  return { params: request.params, location: request.location };
 }
 
 async function verdictFor(verifierBase, state) {
   log.debug("Entering verdictFor().");
-  const r = await httpJson(verifierBase + "/oid4vp/result/" +
-      encodeURIComponent(state));
+  const r = await verificationResult(verifierBase, state);
   assert.ok(r.ok, "the verifier should report what it decided, got HTTP " +
             r.status);
   log.debug("Leaving verdictFor().");
@@ -665,5 +700,7 @@ module.exports = {
   didJwkFor: didJwkFor,
   plantIntoWallet: plantIntoWallet,
   freshJwtVcJsonRequest: freshJwtVcJsonRequest,
+  startVerification: startVerification,
+  verificationResult: verificationResult,
   verdictFor: verdictFor
 };
