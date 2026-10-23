@@ -990,98 +990,19 @@ function stopReceiver() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. THE ROLES REVERSED.
+// 7. THE ROLES REVERSED — GONE UNTIL #363.
+//
+// This section signed SETs here and pushed them AT iya-sts's `/ssf/receive`,
+// with its issuer accepted for the run through `ssf.receiveIssuers`, and
+// asserted what a receiver must refuse. iya-sts #593 deleted that endpoint
+// and the setting: its receiver for a third party's signals is now a
+// federation relationship, which treats the sender as a full SSF transmitter
+// (discovery, a stream created AT the sender, a push secret, verification
+// against the sender's JWKS). Nothing here is one yet — that is
+// rcbj/id-proto-debugger#363, and this section moves onto it when it lands.
+// The api's own push inbox, the interim target the page jobs use, is
+// `api_ssf.js`'s subject already, so repeating it here would add nothing.
 // ---------------------------------------------------------------------------
-async function thisTestCanBeTheTransmitter() {
-  log.info("[transmit] The other half of the protocol: this test signs a SET " +
-      "and pushes it AT the mock, which is what a client acting as a " +
-      "transmitter does. Once with ES256 and once POST-QUANTUM, because a " +
-      "SET is the document most worth signing that way — RFC 8417 forbids it " +
-      "to expire, so it is read long after it was written.");
-  const url = stsUrl + '/ssf/receive';
-  // SINCE THE MOCK'S SSF 1.0 FINAL PASS (iya-sts #144) THAT RECEIVER CHECKS
-  // WHAT A RECEIVER MUST: the issuer (section 4.1.6) and the audience (RFC
-  // 8417 section 2.2). Its audience defaults to the endpoint's own URL, which
-  // a transmitter can discover without being told, so that is what this
-  // addresses; its accepted issuers default to the mock's OWN transmitter,
-  // so this test — a foreign transmitter — is added for the run and
-  // restoreSettings() takes it off again.
-  const issuer = 'https://ssf-protocol-test.example/';
-  await setSetting('ssf.receiveIssuers', issuer);
-  const algs = ['ES256', 'ML-DSA-44'];
-  let alg;
-  for (alg of algs) {
-    const pair = jws.generateKey(alg);
-    const priv = jws.privateJwk(alg, pair.privateKey, pair.publicKey);
-    const claims = ssf.buildSetClaims({
-      issuer: issuer,
-      audience: url,
-      uri: events.SSF_PREFIX + 'stream-updated',
-      payload: { status: 'paused', reason: 'from ssf_protocol.js' } });
-    const token = await ssf.signSet(claims, priv, alg, {});
-    const push = ssf.buildPushRequest(token, {});
-    const answer = await call('POST', url, push.body,
-        { anonymous: true, headers: push.headers });
-    const verdict = ssf.readPushResponse(answer.status, answer.body);
-    check('a ' + alg + '-signed SET is accepted', function () {
-      assert.ok(verdict.accepted,
-          'The mock refused a ' + alg + '-signed SET: ' + answer.status +
-          ' ' + answer.text);
-      assert.strictEqual(answer.status, 202,
-          'RFC 8935 section 2.3 makes a success a 202.');
-      assert.strictEqual(answer.text, '',
-          'A success is an EMPTY 202. A document here would be something a ' +
-          'transmitter could depend on that no receiver has to send.');
-    });
-  }
-  // And the half a receiver is FOR: an event addressed to somebody else.
-  const strayPair = jws.generateKey('ES256');
-  const strayToken = await ssf.signSet(ssf.buildSetClaims({
-    issuer: issuer, audience: 'https://somebody-else.example/',
-    uri: events.SSF_PREFIX + 'stream-updated',
-    payload: { status: 'paused', reason: 'addressed elsewhere' } }),
-  jws.privateJwk('ES256', strayPair.privateKey, strayPair.publicKey),
-  'ES256', {});
-  const strayPush = ssf.buildPushRequest(strayToken, {});
-  const stray = await call('POST', url, strayPush.body,
-      { anonymous: true, headers: strayPush.headers });
-  check('a SET addressed to somebody else is refused as invalid_audience',
-    function () {
-      assert.strictEqual(stray.status, 400, stray.text);
-      assert.strictEqual(ssf.readPushResponse(stray.status, stray.body).err,
-          'invalid_audience');
-    });
-  const malformed = await call('POST', url, 'not-a-jws',
-      { anonymous: true,
-        headers: { 'Content-Type': ssf.SET_MEDIA_TYPE } });
-  check('a body that is not a compact JWS is refused with an err',
-    function () {
-      assert.strictEqual(malformed.status, 400);
-      assert.strictEqual((malformed.body || {}).err, 'invalid_request');
-      assert.ok(String((malformed.body || {}).description)
-          .indexOf('three') >= 0);
-    });
-  const empty = await call('POST', url, '',
-      { anonymous: true,
-        headers: { 'Content-Type': ssf.SET_MEDIA_TYPE } });
-  check('an empty body is refused naming RFC 8935 section 2.1', function () {
-    assert.strictEqual(empty.status, 400);
-    assert.ok(String((empty.body || {}).description).indexOf('2.1') >= 0);
-  });
-  const seen = await call('GET', stsUrl + '/ssf/received', null, {});
-  check('what arrived is visible, with the media type it came under',
-    function () {
-      assert.strictEqual(seen.status, 200);
-      const rows = (seen.body || {}).received || [];
-      assert.ok(rows.length >= 2,
-          'The mock recorded ' + rows.length + ' pushed event(s) and this ' +
-          'section sent at least two.');
-      assert.ok(rows.some(function (one) {
-        return one.correctMediaType === true;
-      }));
-    });
-  log.info("[transmit] OK.");
-}
 
 // ---------------------------------------------------------------------------
 // 8. THE DELIBERATE DEFECTS.
@@ -1219,7 +1140,6 @@ async function test() {
     await theThreeStatusesBehaveDifferently();
     await theVerificationEventIsWellFormed();
     await pollingHasItsOwnRefusals();
-    await thisTestCanBeTheTransmitter();
     await theDefectsAreReachable();
   } finally {
     // The mock's configuration and this run's streams are put back whether
@@ -1232,9 +1152,9 @@ async function test() {
   skips.forEach(function (one) {
     log.warn("  skipped: " + one);
   });
-  assert.ok(checks >= 55,
+  assert.ok(checks >= 49,
       'Only ' + checks + ' checks ran and this file defines well over ' +
-      'fifty against a live transmitter. A section has stopped being ' +
+      'forty against a live transmitter. A section has stopped being ' +
       'called.');
   log.info("Test completed successfully.");
   log.debug("Leaving test().");

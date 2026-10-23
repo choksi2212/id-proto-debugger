@@ -641,16 +641,17 @@ async function thePageCanSignAndPushAnEvent(driver) {
       "Crypto — which does not exist on this suite's http origin.");
   const priv = await valueOf(driver, "ssf_tx_private_key");
   assert.ok(priv.indexOf('"kty"') >= 0, "No private JWK: " + priv);
-  // THE MOCK'S RECEIVER CHECKS WHAT A RECEIVER MUST (iya-sts #144): an
-  // audience, which defaults to the endpoint's own URL — so that is what is
-  // addressed — and an issuer, which defaults to its OWN transmitter's. This
-  // page is a foreign transmitter here, so its issuer is added for the run
-  // and cleanUp() puts the setting back.
+  // THE RECEIVER IS THE api's OWN PUSH INBOX, until #363. This pushed to
+  // iya-sts's `/ssf/receive`, which iya-sts #593 deleted; its receiver for a
+  // third party's signals is now a federation relationship, which needs the
+  // sender to be a full SSF transmitter — rcbj/id-proto-debugger#363. The
+  // inbox stores what arrives as text and verifies nothing, so what this
+  // asserts is the push itself and that the token arrived whole.
+  const inbox = await openApiInbox();
   const txIssuer = "https://ssf-page-test.example/";
-  await acceptIssuerAtTheMock(txIssuer);
   await fill(driver, "ssf_tx_iss", txIssuer);
-  await fill(driver, "ssf_tx_aud", stsUrl + "/ssf/receive");
-  await fill(driver, "ssf_tx_endpoint", stsUrl + "/ssf/receive");
+  await fill(driver, "ssf_tx_aud", inbox.endpoint);
+  await fill(driver, "ssf_tx_endpoint", inbox.endpoint);
   await driver.executeScript(
       "document.getElementById('ssf_tx_type').value = " +
       "'https://schemas.openid.net/secevent/ssf/event-type/stream-updated';" +
@@ -692,6 +693,17 @@ async function thePageCanSignAndPushAnEvent(driver) {
   const pushed = await waitForValue(driver, "ssf_tx_status", "push status");
   assert.ok(pushed.indexOf("Delivered") === 0,
       "The push said: " + pushed);
+  const arrived = await fetch(apiUrl + "/ssf/receiver/" +
+      encodeURIComponent(inbox.id) + "/events").then(function (r) {
+    return r.json();
+  });
+  const tokens = ((arrived && arrived.events) || []).map(function (one) {
+    return String(one.token || one.body || one.set || "");
+  });
+  assert.ok(tokens.indexOf(token) >= 0,
+      "The api's inbox holds " + tokens.length + " event(s) and not the " +
+      "token this page signed, so \"Delivered\" was not about this push. " +
+      "It answered: " + JSON.stringify(arrived).slice(0, 300));
   const messages = await textOf(driver, "ssf_messages");
   assert.ok(messages.indexOf("sent") >= 0,
       "The event history does not record what was SENT, which is half of " +
@@ -1233,59 +1245,30 @@ async function preconditions() {
   return { ok: true, why: "" };
 }
 
-// `ssf.receiveIssuers`, through the mock's management API — whose token
-// tools/attach-admin-token.js puts on this process's fetch. What was there is
-// kept for cleanUp(): an override's text, or `false` for a setting that
-// followed its default and is RESET afterwards rather than pinned to that
-// default. The lock this job holds (`sts-ssf` in run-report.js) is the one
-// every job touching the mock's SSF configuration takes.
-let receiveIssuersBefore = null;
-
-async function acceptIssuerAtTheMock(issuer) {
-  log.debug("Entering acceptIssuerAtTheMock(). " + issuer);
-  const admin = stsUrl + "/admin-api";
-  const before = await fetch(admin + "/config", {
-    headers: { Accept: "application/json" } });
-  const doc = before.ok ? await before.json() : {};
-  // The rows are under `groups[].settings`.
-  const rows = [];
-  (doc.groups || []).forEach(function (group) {
-    (group.settings || []).forEach(function (one) {
-      rows.push(one);
-    });
-  });
-  const row = rows.filter(function (one) {
-    return one.key === "ssf.receiveIssuers";
-  })[0];
-  if (row && receiveIssuersBefore === null) {
-    receiveIssuersBefore = row.overridden === true
-      ? String(row.text === undefined ? "" : row.text) : false;
-  }
-  const set = await fetch(admin + "/config/set", {
+// An RFC 8935 inbox at the api: `{ id, endpoint }`, the endpoint being what
+// a transmitter is given as its delivery URL. The api answers
+// `{ ok, inbox: { id, … }, deliveryEndpoint }`.
+async function openApiInbox() {
+  log.debug("Entering openApiInbox().");
+  const made = await fetch(apiUrl + "/ssf/receiver", {
     method: "POST",
     headers: { "Content-Type": "application/json",
       Accept: "application/json" },
-    body: JSON.stringify({ key: "ssf.receiveIssuers", value: issuer }) });
-  assert.strictEqual(set.status, 200,
-      "The mock refused to accept " + issuer + " as an issuer at " +
-      "/ssf/receive: " + (await set.text()));
-  log.debug("Leaving acceptIssuerAtTheMock().");
+    body: "{}" });
+  const json = await made.json().catch(function () {
+    return null;
+  });
+  const id = json && json.inbox && json.inbox.id;
+  const endpoint = json ? String(json.deliveryEndpoint || "") : "";
+  assert.ok(made.status < 300 && id && endpoint,
+      "The api at " + apiUrl + " would not open a push inbox: " +
+      made.status + " " + JSON.stringify(json));
+  log.debug("Leaving openApiInbox().");
+  return { id: String(id), endpoint: endpoint };
 }
 
 async function cleanUp() {
   log.debug("Entering cleanUp().");
-  if (receiveIssuersBefore !== null) {
-    const restore = receiveIssuersBefore === false
-      ? { path: "/reset", body: { key: "ssf.receiveIssuers" } }
-      : { path: "/set", body: { key: "ssf.receiveIssuers",
-        value: receiveIssuersBefore } };
-    await fetch(stsUrl + "/admin-api/config" + restore.path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(restore.body) }).catch(function () {
-      return null;
-    });
-  }
   let id;
   for (id of created) {
     await fetch(stsUrl + "/ssf/stream", {

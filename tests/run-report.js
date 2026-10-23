@@ -3211,9 +3211,11 @@ function buildJobs() {
         "follow them, and the reset that starts over)",
     script: "caep_page.js",
     env: {
-      // NO API_URL. This job needs no backend — see the note at the top of
-      // caep_page.js — and it ran against a deployed static site with one
-      // for months, which is a job carrying an address it never dialled.
+      // API_URL only where this target HAS an api: the page's pushes land in
+      // its inbox until #363 (see the note at the top of caep_page.js). A
+      // static site gets none, and the job sends its events nowhere.
+      API_URL: env.LDAP_AVAILABLE === "false" ? "" :
+          (env.API_URL || "https://localhost:4000"),
       SSF_TRANSMITTER_URL: env.SSF_TRANSMITTER_URL || env.STS_URL ||
           "https://localhost:8081",
       // The two the OAuth2 / OIDC jobs are given, because this one drives
