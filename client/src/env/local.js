@@ -76,6 +76,13 @@ var config = {
   // walt.id (its issuer is :7005/openid4vci, its verifier a different service
   // on :7003).
   oid4vpVerifierUrlDefault: "https://localhost:8081",
+  // THE ISSUER'S AND THE VERIFIER'S WEBSITES: the pages where a person
+  // starts an offer or a verification, which the two chooser pages
+  // (vc-issuance-0, vc-presentation-0) send the reader to. A different
+  // party from the issuer and Verifier above, at a URL of its own; on
+  // this suite's stacks it is iya-sts's development companion.
+  oid4vciIssuerSiteUrlDefault: "http://localhost:9700/issuer",
+  oid4vpVerifierSiteUrlDefault: "http://localhost:9700/verifier",
   // Default RFC 8414 (OAuth 2.0 Authorization Server Metadata) endpoint for
   // the Metadata Retrieval panes. The mock authorization server metadata the
   // STS service publishes.

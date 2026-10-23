@@ -72,6 +72,13 @@ var config = {
   wstrustStsUrlDefault: STS + "/sts",
   oid4vciIssuerUrlDefault: STS,
   oid4vpVerifierUrlDefault: STS,
+  // THE ISSUER'S AND THE VERIFIER'S WEBSITES: the pages where a person
+  // starts an offer or a verification, which the two chooser pages
+  // (vc-issuance-0, vc-presentation-0) send the reader to. A different
+  // party from the issuer and Verifier above, at a URL of its own; on
+  // this suite's stacks it is iya-sts's development companion.
+  oid4vciIssuerSiteUrlDefault: "",
+  oid4vpVerifierSiteUrlDefault: "",
   rfc8414MetadataUrlDefault: STS + "/.well-known/oauth-authorization-server",
 
   // Kerberos: the KDC is dialed by the api, in the same container as the mock
