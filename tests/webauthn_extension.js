@@ -473,7 +473,10 @@ async function test() {
         return /jwk\.kty/.test(t);
       }, waitTime * 6, "the Analyzer did not decode the captured credential");
       const cose = await driver.findElement(By.id("wa_cose_body")).getText();
-      assert.ok(/ES256|RS256/.test(cose),
+      // Whatever the browser chose from the 19 offered — ML-DSA too, which a
+      // newer Chrome's virtual authenticator picks — so long as it is named.
+      const named = /[EPR]S(256|384|512)|EdDSA|ML-DSA-(44|65|87)/;
+      assert.ok(named.test(cose) && !/unrecognised/.test(cose),
                 "the credential's algorithm should be named: " + cose.slice(0,
                 80));
       return "the capture decodes on the Analyzer with no re-formatting";
