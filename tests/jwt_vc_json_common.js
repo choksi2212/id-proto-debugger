@@ -545,6 +545,68 @@ async function startVerification(verifierBase, format, byReference) {
            query: location.split("?")[1] || "" };
 }
 
+// THE VERIFIER'S WEBSITE, AS A PERSON USES IT. The chooser on step 0 sends
+// the browser to the Verifier's website (iya-sts's companion on this
+// suite's stacks, `/verifier`), which is ONE page with a form: the format to
+// ask for, by value or by reference, and whether the wallet is on this
+// device. This fills it the way a person would and presses Start; for a
+// wallet on this device the Verifier then redirects the browser to the
+// wallet (the debugger) with its request. `opts`: { By, until, format,
+// byReference, crossDevice, wait }.
+async function startAtTheVerifierWebsite(driver, opts) {
+  log.debug("Entering startAtTheVerifierWebsite(). format=" + opts.format);
+  const By = opts.By;
+  const until = opts.until;
+  await driver.wait(until.elementLocated(By.id("start")), opts.wait,
+    "the Verifier's website should show its start form (#start).");
+  const chosen = await driver.executeScript(
+    "var f = document.getElementById('format');" +
+    "var known = Array.prototype.map.call(f.options, function (o) {" +
+    "  return o.value; });" +
+    "if (known.indexOf(arguments[0]) < 0) { return known; }" +
+    "f.value = arguments[0];" +
+    "document.getElementById('by').value = arguments[1];" +
+    "document.getElementById('mode').value = arguments[2];" +
+    "return true;",
+    opts.format, opts.byReference ? "reference" : "value",
+    opts.crossDevice ? "cross-device" : "same-device");
+  assert.strictEqual(chosen, true,
+    "the Verifier's website offers no " + opts.format + " format; it " +
+    "offers " + JSON.stringify(chosen) + ".");
+  await driver.findElement(By.id("start")).click();
+  if (!opts.crossDevice) {
+    await driver.wait(until.urlContains("vc-presentation-1.html"), opts.wait,
+      "the Verifier should send the wallet its request.");
+  }
+  log.debug("Leaving startAtTheVerifierWebsite().");
+}
+
+// A REQUEST, GOT THE WAY A PERSON GETS ONE: the Verifier's website, its
+// form, and the redirect to the wallet. Answers what the wallet was handed —
+// `{ params, location, query }` parsed off the URL the browser landed on —
+// for the checks that need the request's state or DCQL query. `opts`:
+// { By, until, siteUrl, format, byReference, wait }.
+async function requestThroughTheVerifierWebsite(driver, opts) {
+  log.debug("Entering requestThroughTheVerifierWebsite().");
+  await driver.get(opts.siteUrl);
+  await startAtTheVerifierWebsite(driver, { By: opts.By, until: opts.until,
+    format: opts.format, byReference: !!opts.byReference, crossDevice: false,
+    wait: opts.wait });
+  const location = await driver.getCurrentUrl();
+  const params = {};
+  location.slice(location.indexOf("?") + 1).split("&").forEach(function (pair) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) {
+      params[decodeURIComponent(pair.slice(0, eq))] =
+             decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, " "));
+    }
+  });
+  log.debug("Leaving requestThroughTheVerifierWebsite(). state=" +
+            params.state);
+  return { params: params, location: location,
+           query: location.split("?")[1] || "" };
+}
+
 async function verificationResult(verifierBase, state) {
   log.debug("Entering verificationResult().");
   const r = await httpJson(verifierBase + "/admin-api/verifications?state=" +
@@ -701,6 +763,8 @@ module.exports = {
   plantIntoWallet: plantIntoWallet,
   freshJwtVcJsonRequest: freshJwtVcJsonRequest,
   startVerification: startVerification,
+  startAtTheVerifierWebsite: startAtTheVerifierWebsite,
+  requestThroughTheVerifierWebsite: requestThroughTheVerifierWebsite,
   verificationResult: verificationResult,
   verdictFor: verdictFor
 };

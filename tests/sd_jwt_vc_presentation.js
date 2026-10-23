@@ -48,6 +48,10 @@ const assert = require("assert");
 const browserFlags = require("./browser_flags.js");
 // startVerification() and verificationResult(), iya-sts's Verifier doors.
 var vpCommon = require("./jwt_vc_json_common.js");
+// The Verifier's website (iya-sts's companion on this suite's stacks), where
+// the chooser on step 0 sends the browser.
+var companionUrl = (process.env.COMPANION_URL || "http://localhost:9700")
+    .replace(/\/+$/, "");
 const crypto = require("crypto");
 const { Command, Option } = require('commander');
 const { loadUrl } = require("./page_load.js");
@@ -609,20 +613,23 @@ async function presentThroughThePages(driver, held, byReference) {
                      cards + ".");
   log.info("[step0] " + holding);
 
-  // Choosing a flow goes to the VERIFIER: a presentation is something a
-  // verifier asks for, so the workflow starts there.
+  // Choosing a flow goes to the VERIFIER'S WEBSITE: a presentation is
+  // something a verifier asks for, so the workflow starts there — at the page
+  // step 0 is configured with (iya-sts's companion here), where the reader
+  // chooses how the request is made.
   await click(driver, By.id(byReference ?
               "vp_usecase_same-device-signed" : "vp_usecase_same-device"));
-  if (!byReference) {
-    await driver.wait(until.elementLocated(By.id("present_by_value")),
-                      fetchWait,
-      "choosing the flow should open the verifier's own web page.");
-    var verifierPage = await driver.getCurrentUrl();
-    assert.ok(verifierPage.indexOf(issuerBase) === 0,
-      "which is hosted by the verifier, got: " + verifierPage);
-    log.info("[step0] OK — the flow starts at the verifier: " + verifierPage);
-    await click(driver, By.id("present_by_value"));
-  }
+  await driver.wait(until.elementLocated(By.id("start")), fetchWait,
+    "choosing the flow should open the verifier's website.");
+  var verifierPage = await driver.getCurrentUrl();
+  assert.ok(verifierPage.indexOf(companionUrl) === 0,
+    "which is the verifier website step 0 is configured with (" +
+    companionUrl + "), got: " + verifierPage);
+  log.info("[step0] OK — the flow starts at the verifier's website: " +
+           verifierPage);
+  await vpCommon.startAtTheVerifierWebsite(driver, { By: By, until: until,
+    format: FORMAT, byReference: !!byReference, crossDevice: false,
+    wait: fetchWait });
   // As in the issuance suite: if the verifier's hand-off does not arrive, name
   // the URL the browser is actually on. The verifier builds it from
   // OID4VP_WALLET_URL (falling back to OID4VCI_WALLET_URL), and that default
@@ -916,11 +923,11 @@ async function withholdARequestedClaim(driver, held) {
   log.debug("Entering withholdARequestedClaim().");
   log.info("=== NEGATIVE: withholding a claim the verifier asked for ===");
   await planCredentialIntoWallet(driver, held);
-  var request = await freshRequest();
-  // Straight to step 1 with the request, the way the verifier's redirect
-  // arrives.
-  await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" +
-    request.location.slice(request.location.indexOf("?") + 1));
+  // The request the way a person gets one: the Verifier's website, which
+  // redirects the browser to step 1 with it.
+  var request = await vpCommon.requestThroughTheVerifierWebsite(driver, {
+    By: By, until: until, siteUrl: companionUrl + "/verifier",
+    format: FORMAT, wait: fetchWait });
   await driver.wait(until.elementLocated(By.id("vp_request_status")), waitTime);
   await waitForStatus(driver, "vp_request_status",
                       function (s) { return /Request read/.test(s); },
@@ -1161,9 +1168,11 @@ async function refusingIsAnAnswer(driver, held) {
   log.debug("Entering refusingIsAnAnswer().");
   log.info("=== The holder refuses ===");
   await planCredentialIntoWallet(driver, held);
-  var request = await freshRequest();
-  await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" +
-    request.location.slice(request.location.indexOf("?") + 1));
+  // The request the way a person gets one: the Verifier's website, which
+  // redirects the browser to step 1 with it.
+  var request = await vpCommon.requestThroughTheVerifierWebsite(driver, {
+    By: By, until: until, siteUrl: companionUrl + "/verifier",
+    format: FORMAT, wait: fetchWait });
   await driver.wait(until.elementLocated(By.id("vp_continue_button")),
                     waitTime);
   await waitForStatus(driver, "vp_request_status",

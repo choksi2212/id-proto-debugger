@@ -33,6 +33,9 @@ const assert = require("assert");
 const crypto = require("crypto");
 const browserFlags = require("./browser_flags.js");
 const common = require("./jwt_vc_json_common.js");
+// The Verifier's website (iya-sts's companion on this suite's stacks).
+const verifierSiteUrl = (process.env.COMPANION_URL ||
+    "http://localhost:9700").replace(/\/+$/, "") + "/verifier";
 const { Command, Option } = require("commander");
 const { loadUrl } = require("./page_load.js");
 var appconfig = require(process.env.CONFIG_FILE);
@@ -114,7 +117,11 @@ async function presentThroughThePages(driver, held) {
     verifierBase: verifierBase, issuerBase: issuerBase
   });
 
-  const request = await common.freshJwtVcJsonRequest(verifierBase, false);
+  // The request the way a person gets one: the Verifier's website (iya-sts's
+  // companion here), which sends the browser on to step 1 with it.
+  const request = await common.requestThroughTheVerifierWebsite(driver, {
+    By: By, until: until, siteUrl: verifierSiteUrl, format: common.FORMAT,
+    wait: stepWait });
   const dcql = JSON.parse(request.params.dcql_query);
   assert.strictEqual(dcql.credentials[0].format, common.FORMAT,
     "the verifier should be asking for jwt_vc_json.");
@@ -124,8 +131,6 @@ async function presentThroughThePages(driver, held) {
         "them. Got: " +
     JSON.stringify(dcql.credentials[0].claims[0].path));
 
-  await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" +
-                        request.location.split("?")[1]);
   await waitForStatus(driver, "vp_request_status",
                       function (s) { return /Request read/.test(s); },
     "step 1 should read a jwt_vc_json request", stepWait);
