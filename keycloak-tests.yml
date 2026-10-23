@@ -19,6 +19,8 @@ services:
     command: ["start-dev", "--features=dpop"]
     hostname: keycloak
     network_mode: "host"
+    security_opt:
+      - no-new-privileges:true
     environment:
       KC_HTTP_PORT: "8080"
       # Both the modern (26+) and legacy bootstrap-admin vars, for compatibility.
@@ -61,6 +63,17 @@ services:
       # unset it arrives empty and sts/server.js falls back to its own default, which
       # is right for a local dev site.
       - OID4VCI_WALLET_URL=${OID4VCI_WALLET_URL}
+      # iya-sts appends no page to the wallet URL since #594: a web
+      # wallet whose pages are not its root names them. These are the
+      # debugger's own two.
+      - OID4VCI_WALLET_ISSUANCE_PATH=/vc-issuance-1.html
+      - OID4VP_WALLET_PRESENTATION_PATH=/vc-presentation-1.html
+      # ONE ACCOUNT PER BROWSER. iya-sts holds several signed-in people per
+      # browser by default since 2026-10-20 (#751), which adds an account-set
+      # cookie, an account switcher on every sign-in page and a "which
+      # account?" step to every sign-out. This suite signs one person in at a
+      # time and tests the debugger, not that switcher, so it is off.
+      - STS_AUTHN_MULTIPLE_ACCOUNTS=false
       # The same base URL is the ORIGIN the deployed pages call this service
       # from, and since iya-sts 2f9825f (2026-09-13) the mock's CORS is an
       # allowlist rather than `*` — so it has to be named here or every
@@ -94,10 +107,40 @@ services:
       # so remote-run-tests.sh installs it with trustStsCertificate() before it
       # builds a browser.
       - STS_HTTPS=true
+      # The management API's client secret, pinned for this run as the other
+      # two stacks pin it: remote-run-tests.sh mints its /admin-api token
+      # with it, and the companion below registers itself with it.
+      - ADMIN_API_CLIENT_SECRET=${ADMIN_API_CLIENT_SECRET:-}
     build:
       # The submodule's own root: see docker-compose.yml for why the context is
       # ./sts rather than this repository with dockerfile: sts/Dockerfile.
       context: ./sts
+  # IYA-STS'S DEVELOPMENT COMPANION (iya-sts #594, #595): the issuer's and the
+  # Verifier's websites the VC workflows start at, and the SPNEGO-protected
+  # page and Kerberos TCP service the Kerberos jobs present tickets to. Host
+  # networking, so http://localhost:9700 — every job's default. It hands the
+  # End-User to the wallet under test, which here is the DEPLOYED site
+  # (OID4VCI_WALLET_URL, the target base URL). iya-sts's certificate on this
+  # stack is the one it makes at its own start, so nothing can hand the
+  # companion an anchor for it and verification is off, as iya-sts's own
+  # docs/docker-compose.md does for a development stack.
+  companion:
+    container_name: idptools-kctest-companion
+    image: rcbj/companion
+    build:
+      context: ./sts/companion
+    network_mode: "host"
+    environment:
+      - COMPANION_PORT=9700
+      - COMPANION_PUBLIC_URL=http://localhost:9700
+      - COMPANION_STS_URL=https://localhost:8081
+      - COMPANION_STS_PUBLIC_URL=https://localhost:8081
+      - COMPANION_STS_TLS_INSECURE=true
+      - COMPANION_BOOTSTRAP_SECRET=${ADMIN_API_CLIENT_SECRET:-}
+      - COMPANION_WALLET_URL=${OID4VCI_WALLET_URL:-https://localhost:3000}/vc-issuance-1.html
+      - COMPANION_KRB5_SERVICE_PORT=8888
+      - COMPANION_LOG_LEVEL=info
+
   # walt.id issuer-api2 — the real OpenID4VCI issuer the interop suite
   # (tests/sd_jwt_vc_waltid.js) runs against. Host networking, so the host-run
   # browser reaches it at localhost:7005 and it reaches Keycloak on the same

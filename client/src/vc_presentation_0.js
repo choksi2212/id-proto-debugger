@@ -21,15 +21,21 @@ var sdJwtVp = require("./sd_jwt_vp");
 var log = bunyan.createLogger({ name: 'vc_presentation_0',
                                 level: appconfig.logLevel });
 
-// Where each flow begins. All three start at the VERIFIER — a presentation is
-// something a verifier asks for — but at different pages of it.
+// Where each flow begins. All three start at the VERIFIER'S WEBSITE — a
+// presentation is something a verifier asks for — and the same page of it:
+// any Verifier's site, configured as one URL (`vp_verifier_site_url`), since
+// nothing in OpenID4VP says what a Verifier's own pages are called. What
+// differs between the three is what the reader chooses there, which `choose`
+// names.
 var STARTS = {
-  "same-device": { verifierPath: "/oid4vp/verifier",
-                  cta: "Go to the verifier's web page" },
-  "same-device-signed": { verifierPath: "/oid4vp/start?by=reference",
-                          cta: "Ask the verifier for a signed request" },
-  "cross-device": { verifierPath: "/oid4vp/start?mode=cross-device",
-                    cta: "Show the verifier's QR code" }
+  "same-device": { choose: "a request by value, for a wallet on this device",
+                  cta: "Go to the verifier's website" },
+  "same-device-signed": { choose: "a request by reference (a signed Request " +
+                                  "Object), for a wallet on this device",
+                          cta: "Go to the verifier's website" },
+  "cross-device": { choose: "a wallet on another device (it shows a QR " +
+                            "code)",
+                    cta: "Go to the verifier's website" }
 };
 
 function esc(v) {
@@ -143,6 +149,7 @@ function verifierBaseUrl() {
 // the two workflows behave the same way under the same buttons.
 // ---------------------------------------------------------------------------
 var CONFIG_FIELDS = [
+  { id: "vp_verifier_site_url", key: "VERIFIER_SITE_URL" },
   { id: "vp_verifier_base_url", key: "VERIFIER_BASE_URL" },
   { id: "vp_verifier_jwks_url", key: "VERIFIER_JWKS_URL" }
 ];
@@ -210,6 +217,8 @@ function restoreDefaults() {
     log.debug("Leaving restoreDefaults(). No default configured.");
     return false;
   }
+  setFieldValue("vp_verifier_site_url",
+                appconfig.oid4vpVerifierSiteUrlDefault || "");
   setFieldValue("vp_verifier_base_url", base);
   // The mock verifier signs Request Objects with the STS key and serves it at
   // /oauth2/jwks. Derived rather than configured separately, because for this
@@ -261,35 +270,23 @@ function heldFormat() {
   log.debug("Leaving heldFormat().");
 }
 
+// The Verifier's website: the configured one, else this deployment's
+// default, else nothing (step 1 then takes a request pasted in by hand).
+function verifierSiteUrl() {
+  log.debug("Entering verifierSiteUrl().");
+  var url = String(sdJwtVc.get(sdJwtVp.KEYS.VERIFIER_SITE_URL) ||
+                   appconfig.oid4vpVerifierSiteUrlDefault || "").trim();
+  log.debug("Leaving verifierSiteUrl(). url=" + url);
+  return url;
+}
+
 function verifierPageUrl(id) {
-  log.debug("Entering verifierPageUrl().");
-  var base = verifierBaseUrl();
-  var path = (STARTS[id] || {}).verifierPath || "/oid4vp/verifier";
-  if (!base) {
-    log.debug("Leaving verifierPageUrl().");
-    return "";
-  }
-  // Tell the verifier which format to ask for.
-  //
-  // Without this every flow here starts a request for the verifier's default,
-  // dc+sd-jwt, whatever the wallet is holding — so a holder who has just been
-  // issued an ldp_vc credential is sent to ask for one they do not have. The
-  // wallet then either sends the wrong shape (which the verifier reports as a
-  // malformed presentation, naming the parse failure rather than the cause) or,
-  // now, refuses on step 1. Neither is the user's fault and neither is fixable
-  // from the wallet side: the format is the VERIFIER's choice, so it has to be
-  // made here, where the link to the verifier is built.
-  //
-  // Omitted when nothing is held, so the verifier keeps its own default and the
-  // page behaves exactly as before for a wallet with no credential.
-  var format = heldFormat();
-  if (!format) {
-    log.debug("Leaving verifierPageUrl().");
-    return base + path;
-  }
+  log.debug("Entering verifierPageUrl(). id=" + id);
+  // The same page for every flow: what differs is chosen ON it, and a
+  // Verifier's own site takes no parameters this workflow could know.
+  var url = verifierSiteUrl();
   log.debug("Leaving verifierPageUrl().");
-  return base + path + (path.indexOf("?") === -1 ? "?" : "&") +
-         "format=" + encodeURIComponent(format);
+  return url;
 }
 
 function buttonHtml(uc, current) {
@@ -394,20 +391,13 @@ function render() {
   // so a base guessed from, say, walt.id's issuer will 404 — and saying so here
   // is the difference between an obvious misconfiguration and an unreachable
   // link.
-  var b = verifierBase();
-  var where = b.base
-    ? "The verifier is " + b.base +
-      (b.source === "configured"
-        ? "."
-        : " (guessed from the credential issuer — these start pages exist " +
-            "only on this " +
-          "debugger's own mock verifier, so set oid4vpVerifierUrlDefault, or " +
-              "paste a request " +
-          "into step 1 by hand, if that is not it).")
-    : "The verifier is not configured yet — step 1 can take a request pasted in by hand instead.";
+  var site = verifierSiteUrl();
+  var where = site
+    ? "The verifier's website is " + site + "; each flow below starts there."
+    : "No verifier website is configured — set one above, or paste a " +
+      "request into step 1 by hand.";
   status("Currently selected: " + current.spec + " · " + current.label + ". " +
-         where,
-         b.source === "guessed from the credential issuer" ? "vc-pending" : "");
+         where, site ? "" : "vc-pending");
   log.debug("Leaving render().");
 }
 
@@ -425,15 +415,22 @@ function choose(id) {
   sdJwtVp.forgetRequest();
   var url = verifierPageUrl(uc.id);
   if (!url) {
-    status("There is no verifier configured to ask for a presentation. Set " +
-           "one in step 1, or paste a " +
-           "request there by hand.", "vc-bad");
+    status("There is no verifier website configured to ask for a " +
+           "presentation. Set one above, or paste a request into step 1 by " +
+           "hand.", "vc-bad");
     window.setTimeout(function () { window.location.href = sdJwtVp.STEP1_URL; },
                       2500);
     log.debug("Leaving choose().");
     return false;
   }
-  status("Taking you to the verifier at " + url + " …", "vc-pending");
+  // The format the wallet holds: the Verifier has to ASK for that one, and on
+  // its own page that is the reader's choice, so it is said here — a holder
+  // of an ldp_vc credential sent to ask for dc+sd-jwt cannot present.
+  var held = heldFormat();
+  status("Taking you to the verifier's website at " + url + " — there, " +
+         "choose " + ((STARTS[uc.id] || {}).choose || "how to be asked") +
+         (held ? ", asking for the " + held + " credential this wallet " +
+                 "holds" : "") + " …", "vc-pending");
   window.location.href = url;
   log.debug("Leaving choose(). Sent to the verifier.");
   return false;
@@ -457,6 +454,7 @@ module.exports = {
   choose: choose,
   render: render,
   verifierBaseUrl: verifierBaseUrl,
+  verifierSiteUrl: verifierSiteUrl,
   togglePane: togglePane,
   saveConfiguration: saveConfiguration,
   clearConfiguration: clearConfiguration,

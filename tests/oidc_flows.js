@@ -82,6 +82,7 @@ const assert = require("assert");
 const { Command, Option } = require('commander');
 const browserFlags = require("./browser_flags.js");
 const registry = require("./sts_applications.js");
+const federationAdmin = require("./federation_admin.js");
 const { loadUrl } = require("./page_load.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
@@ -1195,6 +1196,18 @@ async function test() {
                              "input[type=\"submit\"][value=\"Authorize\"]"))
                              .click();
     await signIn(driver, user.login);
+
+    // The mock names a person by the `urn:uuid:` of their directory entry and
+    // puts no `preferred_username` beside an access token, so its tokens carry
+    // nothing a login name can be found in. The entry exists once the sign-in
+    // has, so the subject is asked for now and every artifact below is held
+    // to it exactly — Keycloak's half already arrives with OIDC_EXPECT_SUB.
+    const mockBase = registry.stsBaseFor(discovery_endpoint);
+    if (!user.sub && mockBase) {
+      user.sub = await federationAdmin.subjectOf(mockBase, user.login);
+      log.info("[subject] " + user.login + " is " + user.sub +
+               " at the mock; every token must name that subject.");
+    }
 
     const params = await checkAuthorizationResponse(driver, flow, sent,
         expected);

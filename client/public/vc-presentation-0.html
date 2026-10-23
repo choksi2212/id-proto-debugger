@@ -56,8 +56,17 @@ defines. It presents whatever credential the
         <tbody>
           <tr>
             <td>
+              <div class="tooltip"><label for="vp_verifier_site_url">Verifier website URL</label>
+                <span class="tooltiptext">The page on the verifier's own website where a person starts a verification &mdash; a relying party's "prove your age" page, say. Every flow below sends you there, and you choose on that page how the request is made. OpenID4VP does not say what such a page is called, so this is a whole URL rather than a path under the verifier. Against a verifier with no such page, paste a request into step 1 instead.</span>
+              </div>
+            </td>
+            <td><input type="text" class="stored" id="vp_verifier_site_url" name="vp_verifier_site_url" size="60"
+                       placeholder="https://verifier.example/start" /></td>
+          </tr>
+          <tr>
+            <td>
               <div class="tooltip"><label for="vp_verifier_base_url">Verifier base URL</label>
-                <span class="tooltiptext">The origin the verifier's own pages live under. It builds the three start links below (/oid4vp/verifier and /oid4vp/start), which are this debugger's mock verifier's own pages &mdash; a real verifier has none, so against one of those you paste a request into step 1 instead.</span>
+                <span class="tooltiptext">The verifier's own origin, which the JWKS URL below defaults under.</span>
               </div>
             </td>
             <td><input type="text" class="stored" id="vp_verifier_base_url" name="vp_verifier_base_url" size="60"

@@ -736,7 +736,7 @@ function present() {
                   ("HTTP " + response.statusCode);
         status("vp_present_status",
           "The verifier refused the presentation: " + err +
-              " Step 3 shows which of its checks failed.",
+              " Step 3 shows what it answered.",
           "vc-bad");
         disable("vp_present_button", false);
         window.setTimeout(function () { window.location.href =

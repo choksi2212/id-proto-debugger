@@ -47,6 +47,7 @@ const browserFlags = require("./browser_flags.js");
 const { mustBeReady } = require("./expectation.js");
 const { usernameFor } = require("./random_username.js");
 const { loadUrl } = require("./page_load.js");
+const registry = require("./sts_applications.js");
 var appconfig = require(process.env.CONFIG_FILE);
 
 var bunyan = require("bunyan");
@@ -56,6 +57,7 @@ log.info("Log initialized. logLevel=" + log.level());
 
 var baseUrl = "https://localhost:3000";
 var apiUrl = process.env.API_URL || "https://localhost:4000";
+var stsUrl = process.env.STS_URL || "https://localhost:8081";
 var kdcHost = process.env.KRB5_KDC_HOST || "localhost";
 var kdcPort = process.env.KRB5_KDC_PORT || "88";
 var realm = process.env.KRB5_REALM || "EXAMPLE.COM";
@@ -1016,6 +1018,60 @@ async function theHistoryNamesTheUserRatherThanAnObject(driver) {
   log.debug("Leaving theHistoryNamesTheUserRatherThanAnObject().");
 }
 
+// ---------------------------------------------------------------------------
+// THE RULES THE THREE S4U CASES NEED, written onto iya-sts's application
+// entries before the browser starts. Since iya-sts #186 Kerberos delegation is
+// its one delegation policy, enforced in BOTH modes, over attributes on the
+// services' entries — a service is the entry whose identifier is SPN@REALM:
+//
+//   the front end   `impersonation` in appDelegationSemantics, which is what
+//                   makes its S4U2Self ticket FORWARDABLE (Active Directory's
+//                   TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION), and the classic
+//                   target in appAllowedToDelegateTo;
+//   the RBCD target the front end in appAllowedToActOnBehalfOf — the
+//                   permission on the TARGET, which is RBCD's whole point.
+//
+// The development fixtures SEED the same rules, but only onto an entry that
+// lacks them, so whatever another job left on these entries would win. They
+// are written here so this job describes the configuration it tests. Nothing
+// is written for the unauthorized target: its refusal is a case below, and it
+// must name both attributes as missing.
+// ---------------------------------------------------------------------------
+async function configureDelegationPolicy() {
+  log.debug("Entering configureDelegationPolicy().");
+  const base = registry.baseOf(stsUrl);
+  const idOf = function (spn) {
+    log.debug("Entering idOf(). " + spn);
+    log.debug("Leaving idOf().");
+    return spn + "@" + realm;
+  };
+  const createFor = function (spn) {
+    log.debug("Entering createFor(). " + spn);
+    log.debug("Leaving createFor().");
+    return { protocols: ["krb5"],
+             fields: { krb5ServicePrincipalName: [idOf(spn)] } };
+  };
+  // THE PERSON IMPERSONATED HAS TO BE SOMEBODY THE DIRECTORY KNOWS: the
+  // policy asks about the subject (protected, its semantics, its roles), and
+  // a name the KDC invented on first sight has no entry to ask, so the
+  // S4U2Self ticket for it comes back NOT forwardable. iya-sts's own S4U
+  // jobs create theirs the same way.
+  await registry.ensurePerson(base, impersonate,
+                              "Kerb-delegation-" + Date.now() + "!");
+  await registry.allowDelegation(base, {
+    application: idOf(frontend), create: createFor(frontend),
+    delegatesTo: [idOf(classicTarget)],
+    why: "protocol transition, then classic constrained delegation" });
+  await registry.allowDelegation(base, {
+    application: idOf(classicTarget), create: createFor(classicTarget),
+    semantics: [], why: "the classic target exists to be reached" });
+  await registry.allowDelegation(base, {
+    application: idOf(rbcdTarget), create: createFor(rbcdTarget),
+    semantics: [], acceptsFrom: [idOf(frontend)],
+    why: "resource-based: the target names who may act on its behalf" });
+  log.debug("Leaving configureDelegationPolicy().");
+}
+
 async function test() {
   log.debug("Entering test().");
   log.info("Starting Test run. The Kerberos delegation page: S4U2Self, " +
@@ -1030,6 +1086,7 @@ async function test() {
               "Start the stack (CONFIG_FILE=./env/local.js docker-compose " +
               "up) and make sure the api\'s krb5AllowedPorts includes " +
               kdcPort + ".");
+  await configureDelegationPolicy();
 
   const options = new chrome.Options();
   // --headless=new, never bare --headless: the Chrome 121 the image

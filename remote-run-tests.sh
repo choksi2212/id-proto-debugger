@@ -551,6 +551,11 @@ startSideCars()
   echo "Entering startSideCars()."
   requireComposeServiceRunning "${KEYCLOAK_COMPOSE_FILE}" keycloak-wsfed
   check_return_code $?
+  # iya-sts's development companion: the VC workflows' issuer and Verifier
+  # websites and the Kerberos jobs' protected page. Started by this launcher,
+  # so one that did not stay up fails the run.
+  requireComposeServiceRunning "${KEYCLOAK_COMPOSE_FILE}" companion
+  check_return_code $?
   waitForWaltid "${KEYCLOAK_COMPOSE_FILE}"
   check_return_code $?
 

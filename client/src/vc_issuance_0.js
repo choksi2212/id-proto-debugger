@@ -23,19 +23,20 @@ var log = bunyan.createLogger({ name: 'vc_issuance_0',
                                 level: appconfig.logLevel });
 
 // Where each use case sends the user once it is chosen. The offer-based ones
-// start at the issuer, not at the wallet — that is the whole point of them.
+// start at the ISSUER'S WEBSITE, not at the wallet — that is the whole point
+// of them — and at one configured URL (`vc_issuer_site_url`), any issuer's,
+// because nothing in OpenID4VCI says what an issuer's own pages are called.
+// The two pre-authorized ones (cross-device, deferred) are offers a person
+// gets wherever their issuer gives them out — an account page, an operator —
+// which is why each says so rather than pretending to a page that makes one.
 var STARTS = {
   "wallet-initiated": { url: "/vc-issuance-1.html",
                        cta: "Start at the wallet" },
-  "offer-same-device": { issuerPath: "/issuer",
-                        cta: "Go to the issuer's web page" },
-  // Cross-device: the End-User is standing in front of the issuer's screen, and
-  // what it shows is a QR code — so go straight to the screen that displays one
-  // rather than to the issuer's front page.
-  "offer-cross-device": { issuerPath: "/issuer/offer?mode=cross-device",
-                          cta: "Show the issuer's QR code" },
-  "offer-deferred": { issuerPath: "/issuer/offer?mode=deferred",
-                      cta: "Show the issuer's QR code" }
+  "offer-same-device": { site: true, cta: "Go to the issuer's website" },
+  "offer-cross-device": { site: true, preAuthorized: true,
+                          cta: "Go to the issuer's website" },
+  "offer-deferred": { site: true, preAuthorized: true,
+                      cta: "Go to the issuer's website" }
 };
 
 function esc(v) {
@@ -62,17 +63,38 @@ function status(text, cls) {
   log.debug("Leaving status().");
 }
 
-// The issuer's web page, derived from the configured credential issuer. For the
-// mock issuer that is <issuer>/issuer; a real one would be wherever it puts its
-// "request your credential" link.
+// The issuer's website: the configured one, else this deployment's default,
+// else nothing (the wallet then takes an offer pasted into step 1).
+function issuerSiteUrl() {
+  log.debug("Entering issuerSiteUrl().");
+  var url = String(sdJwtVc.get(sdJwtVc.KEYS.ISSUER_SITE_URL) ||
+                   appconfig.oid4vciIssuerSiteUrlDefault || "").trim();
+  log.debug("Leaving issuerSiteUrl(). url=" + url);
+  return url;
+}
+
+// The same page for every offer use case: what differs is what the reader
+// asks for on it.
 function issuerPageUrl(id) {
   log.debug("Entering issuerPageUrl(). id=" + id);
-  var cfg = sdJwtVc.storedRequestConfig();
-  var issuer = cfg.credentialIssuer || appconfig.oid4vciIssuerUrlDefault || "";
-  var path = (STARTS[id] || {}).issuerPath || "/issuer";
-  var url = issuer ? issuer.replace(/\/+$/, "") + path : "";
+  var url = (STARTS[id] || {}).site ? issuerSiteUrl() : "";
   log.debug("Leaving issuerPageUrl(). url=" + url);
   return url;
+}
+
+// The field above the use cases.
+function saveIssuerSite() {
+  log.debug("Entering saveIssuerSite().");
+  var e = el("vc_issuer_site_url");
+  var v = e ? String(e.value || "").trim() : "";
+  if (v) {
+    sdJwtVc.set(sdJwtVc.KEYS.ISSUER_SITE_URL, v);
+  } else {
+    sdJwtVc.remove(sdJwtVc.KEYS.ISSUER_SITE_URL);
+  }
+  render();
+  log.debug("Leaving saveIssuerSite().");
+  return false;
 }
 
 function buttonHtml(uc, current) {
@@ -134,19 +156,24 @@ function choose(id) {
   // A previous run's offer does not belong to this one.
   sdJwtVc.forgetOffer();
 
-  if ((STARTS[uc.id] || {}).issuerPath) {
+  if ((STARTS[uc.id] || {}).site) {
     var url = issuerPageUrl(uc.id);
     if (!url) {
-      status("Set the credential issuer first (step 1 has the field) — the " +
-             "issuer's web page is where an " +
-             "offer comes from, and this workflow does not know where " +
-                 "it is yet.", "vc-bad");
+      status("Set the issuer's website first (the field above) — it is " +
+             "where an offer comes from, and this workflow does not know " +
+             "where it is yet. Or paste an offer into step 1.", "vc-bad");
       window.setTimeout(function () { window.location.href =
                         "/vc-issuance-1.html"; }, 2500);
       log.debug("Leaving choose().");
       return false;
     }
-    status("Taking you to the issuer at " + url + " …", "vc-pending");
+    status("Taking you to the issuer's website at " + url +
+           ((STARTS[uc.id] || {}).preAuthorized
+             ? " — a pre-authorized offer, with a transaction code, comes " +
+               "from wherever your issuer makes one (an account page you " +
+               "sign in to, or an operator); open its link here or paste it " +
+               "into step 1"
+             : "") + " …", "vc-pending");
     window.location.href = url;
     log.debug("Leaving choose(). Sent to the issuer.");
     return false;
@@ -160,6 +187,11 @@ function choose(id) {
 
 function onload() {
   log.debug("Entering onload().");
+  var site = el("vc_issuer_site_url");
+  if (site) {
+    site.value = sdJwtVc.get(sdJwtVc.KEYS.ISSUER_SITE_URL) ||
+                 appconfig.oid4vciIssuerSiteUrlDefault || "";
+  }
   render();
   var step = document.getElementById("vc_step_0");
   if (step) step.className = "vc-step-current";
@@ -174,5 +206,7 @@ module.exports = {
   choose: choose,
   render: render,
   issuerPageUrl: issuerPageUrl,
+  issuerSiteUrl: issuerSiteUrl,
+  saveIssuerSite: saveIssuerSite,
   onload: onload
 };

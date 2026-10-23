@@ -57,6 +57,9 @@ var KEYS = {
   HOLDER_PRIVATE_JWK: "sdjwtvc_holder_private_jwk",
   // Which OID4VCI Appendix H use case the workflow is running.
   USE_CASE: "sdjwtvc_use_case",
+  // The issuer's WEBSITE: the page where a person asks for a Credential Offer,
+  // which the offer use cases on step 0 send the reader to.
+  ISSUER_SITE_URL: "sdjwtvc_issuer_site_url",
   // The Credential Offer, when the use case has one: { offer, source,
   // receivedAt }.
   OFFER: "sdjwtvc_credential_offer",

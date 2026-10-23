@@ -164,26 +164,13 @@ Usage: $(basename "$0") [--saml-dev] [--saml-only[=keycloak|sts|both]]
                document for anything asked for — so --saml-only=sts starts in
                seconds and is the fastest loop.
 
-               The sts half runs SIX jobs the keycloak half cannot. Five are
-               SAML 1.1 and all of them for one reason: Keycloak has
-               spoken no SAML 1.1 for years. Three are tests/saml11_sso.js —
-               the debugger's own SAML 1.1 service provider through its pages,
-               once per binding — and one is tests/saml11_options.js, which
-               asserts which SP/Request settings apply to 1.1 and which are
-               switched off. The fifth is tests/sts_saml11.js, which uses no
-               browser at all: it drives the mock's identity provider over HTTP
-               with a relying party it writes itself, so that a shared
-               misunderstanding between the two ends of the exchange cannot
-               pass unnoticed.
-
-               The SIXTH is tests/sts_saml_encryption.js and it is SAML 2.0:
-               the mock encrypts and this half is where that is exercised.
-               It writes its own service provider — its own key pair, its own
-               XML Encryption decryptor — and is mostly negatives: an altered
-               ciphertext, an EncryptedID encrypted to another key, and a
-               decrypted fragment that must carry its own namespace. There is
-               no keycloak half because tests/saml_encrypted_sso.js already
-               drives that direction, in a browser, against Keycloak.
+               The sts half runs FOUR jobs the keycloak half cannot, all
+               SAML 1.1, for one reason: Keycloak has spoken no SAML 1.1 for
+               years. Three are tests/saml11_sso.js — the debugger's own SAML
+               1.1 service provider through its pages, once per binding — and
+               one is tests/saml11_options.js, which asserts which SP/Request
+               settings apply to 1.1 and which are switched off. The mock's own
+               SAML 1.1 and SAML 2.0 encryption jobs are iya-sts's suite's.
 
   --wsfed-only[=IDP]
                Build + start only api, client, the mock STS and the WS-Fed
@@ -711,10 +698,11 @@ prepTestEnv()
 startDocker()
 {
   # Clear the CONTAINERIZED stack's containers first. The two compose files give
-  # several services the same hard-coded `container_name` — keycloak-wsfed, sts,
-  # keycloak — while configuring them incompatibly (this file uses host networking
-  # and a WildFly port-offset; docker-compose-run-tests.yml uses a bridge network
-  # and published ports). A container left behind by ./docker-run-tests.sh is
+  # several services the same hard-coded `container_name` — keycloak-wsfed,
+  # id-proto-debugger-sts, keycloak — while configuring them incompatibly
+  # (this file uses host networking and a WildFly port-offset;
+  # docker-compose-run-tests.yml uses a bridge network and published ports).
+  # A container left behind by ./docker-run-tests.sh is
   # therefore the wrong container for this run, and compose cannot create the right
   # one while that name is taken: `up` fails, or the side-car simply never appears
   # and the WS-Federation check below stops the run. docker-run-tests.sh does the
@@ -798,6 +786,14 @@ startDocker()
   # naming an authorization rule and a TLS chain, and a third green against the
   # stranger. This asks the mock which of its listeners bound.
   requireStsSpiffeListeners https://localhost:8081 sts
+  check_return_code $?
+  # iya-sts's development companion (iya-sts #594, #595): the VC workflows
+  # start at its issuer and Verifier websites and the Kerberos jobs present
+  # tickets to its SPNEGO page and TCP service. This launcher started it, so
+  # a companion that did not stay up fails the run rather than leaving those
+  # jobs to fail one by one for a reason none of them names.
+  CONFIG_FILE=./env/local.js requireComposeServiceRunning local-tests.yml \
+    companion
   check_return_code $?
 
   # ------------------------------------------------------------------------
@@ -957,8 +953,7 @@ runSamlSuiteAgainst()
 # identity provider and this profile has exactly one: Keycloak has spoken no
 # SAML 1.1 for years, so a second pass would have nothing to run against. The
 # three binding jobs drive the debugger's pages exactly as saml_sso.js does;
-# saml11_options.js needs no identity provider at all; and sts_saml11.js needs
-# no browser, because it writes its own relying party.
+# and saml11_options.js needs no identity provider at all.
 #
 # Nothing has to be provisioned: the mock accepts any relying party identifier,
 # creates the application entry on sight, and mints a metadata document for
@@ -991,17 +986,6 @@ runSaml11Suite()
     runSamlAgainst "the mock STS (SAML 1.1)" saml11_options.js
   )
   if [ $? -ne 0 ]; then rc=1; failures="${failures} options11"; fi
-  (
-    echo "Entering runStsSaml11(). WSTRUST_STS_URL=${WSTRUST_STS_URL}"
-    node "${NODEJS_BASE_DIR}/sts_saml11.js" --url "${DEBUGGER_BASE_URL}"
-    # The subshell's status is the status of its LAST command, so the rc has to
-    # be carried out deliberately — an echo after the node call would otherwise
-    # make every run of it succeed. runSamlAgainst() does the same.
-    sts_saml11_rc=$?
-    echo "Leaving runStsSaml11(). rc=${sts_saml11_rc}"
-    exit ${sts_saml11_rc}
-  )
-  if [ $? -ne 0 ]; then rc=1; failures="${failures} sts-saml11"; fi
   if [ ${rc} -ne 0 ];
   then
     echo "SAML 1.1 failed:${failures}" >&2

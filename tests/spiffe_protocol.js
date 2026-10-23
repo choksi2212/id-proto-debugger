@@ -198,8 +198,17 @@ function json(url, options) {
 function readSettingRow(key) {
   log.debug("Entering readSettingRow(). " + key);
   return json(STS_URL + "/admin-api/config").then(function (answer) {
-    const rows = (answer.body && (answer.body.settings ||
-      answer.body.config)) || [];
+    // Every row is under `groups[].settings`; a top-level `settings` is a
+    // flat list only on an older mock (on a current one it is the settings
+    // block the console draws, an object).
+    const body = answer.body || {};
+    const rows = Array.isArray(body.settings) ? body.settings.slice() :
+      (Array.isArray(body.config) ? body.config.slice() : []);
+    (body.groups || []).forEach(function (group) {
+      (group.settings || []).forEach(function (one) {
+        rows.push(one);
+      });
+    });
     for (const row of rows) {
       if (row.key === key) {
         log.debug("Leaving readSettingRow(). found, source=" + row.source);
@@ -1411,18 +1420,27 @@ async function testNoIdentityPath(adminBase, restore) {
   const answer = await call({ address: WORKLOAD_ADDRESS, service: "workload",
     method: "FetchJWTSVID",
     request: { audience: ["spiffe://" + TRUST_DOMAIN + "/aud-" + STAMP] } });
+  // PERMISSION_DENIED, and not an empty list: SPIFFE Workload API sections
+  // 5.2.1, 5.2.2, 6.2.1 and 6.2.2 say a server SHOULD refuse a client
+  // entitled to nothing that way, and SPIRE does (iya-sts #274). This job
+  // asserted the empty list while iya-sts answered with one.
   check("with autoCreateEntries off and nothing matching, a workload is " +
-    "answered with an EMPTY SVID LIST rather than having an identity " +
-    "invented for it — what a real agent says to an unregistered workload, " +
-    "and a path most client libraries have and almost nobody runs",
+    "REFUSED PERMISSION_DENIED rather than having an identity invented for " +
+    "it — what a real agent says to an unregistered workload, and a path " +
+    "most client libraries have and almost nobody runs",
     function () {
-      assert.ok(answer.ok, answer.status.details);
-      const svids = (answer.messages[0] || {}).svids || [];
+      const svids = ((answer.messages || [])[0] || {}).svids || [];
       assert.strictEqual(svids.length, 0,
         "an identity was handed out to a caller matching no entry while " +
         "autoCreateEntries was off: " + JSON.stringify(svids.map(function (s) {
           return s.spiffe_id;
         })));
+      assert.ok(!answer.ok,
+        "a caller entitled to nothing was answered OK; the specification " +
+        "says PERMISSION_DENIED");
+      assert.strictEqual((answer.status || {}).name, "PERMISSION_DENIED",
+        "the refusal should be PERMISSION_DENIED and is " +
+        JSON.stringify(answer.status));
     });
 
   check("and the three SEEDED entries did not match either, because their " +

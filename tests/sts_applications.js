@@ -121,6 +121,8 @@
 // caller without one still has to be able to load this module, so an
 // unresolvable CONFIG_FILE falls back to info rather than throwing — the same
 // arrangement tests/wait_for.js has, and for the same reason.
+// The sign-in screen over `/authn-api` (#571).
+var authnSignin = require("./authn_signin");
 var bunyan = require("bunyan");
 var assert = require("assert");
 var log = bunyan.createLogger({
@@ -415,6 +417,47 @@ async function forget(base, identifier) {
 // back in: `fields` holds a list for a multi-valued attribute and a bare string
 // for a single-valued one, and a caller reading one of each must not have to
 // care which it got.
+// `oauthScope` RECORDS WHAT A CLIENT ASKED FOR, AND SINCE THE 2026-10 sts/
+// BUMP NOBODY MAY WRITE IT. The mock fills it as requests arrive and refuses
+// an add by name; what a client may be ISSUED is `oauthAllowedScope`. Every
+// caller here wrote `oauthScope` meaning "the scopes this job will ask for",
+// which is exactly a declaration — so the values move onto
+// `oauthAllowedScope`, merged with any the caller declared itself. In
+// development that only grants (an undeclared ordinary scope is issued
+// anyway); in product it is the declaration the request needs. A mock that
+// still lets `oauthScope` be written, or has no `oauthAllowedScope`, gets the
+// fields unchanged.
+async function declaredScopeFields(base, fields) {
+  log.debug("Entering declaredScopeFields().");
+  if (!fields || fields.oauthScope === undefined) {
+    log.debug("Leaving declaredScopeFields(). No oauthScope.");
+    return fields;
+  }
+  var modes = await editableModes(base);
+  if (modes.oauthScope || !modes.oauthAllowedScope) {
+    log.debug("Leaving declaredScopeFields(). oauthScope still writable.");
+    return fields;
+  }
+  var out = {};
+  Object.keys(fields).forEach(function (name) {
+    if (name !== "oauthScope") {
+      out[name] = fields[name];
+    }
+  });
+  var allowed = valuesOf(out.oauthAllowedScope);
+  valuesOf(fields.oauthScope).forEach(function (one) {
+    if (allowed.indexOf(one) < 0) {
+      allowed.push(one);
+    }
+  });
+  out.oauthAllowedScope = allowed;
+  log.info("[registry] oauthScope is a record of requests on this mock; " +
+           "declaring [" + allowed.join(", ") + "] on oauthAllowedScope " +
+           "instead.");
+  log.debug("Leaving declaredScopeFields().");
+  return out;
+}
+
 function valuesOf(value) {
   log.debug("Entering valuesOf().");
   if (value === undefined || value === null || value === "") {
@@ -423,29 +466,7 @@ function valuesOf(value) {
   }
   var list = Array.isArray(value) ? value : [value];
   log.debug("Leaving valuesOf(). " + list.length + " value(s).");
-  // A CLIENT SECRET IS A RECORD since iya-sts 2dc251b4 (an application may
-  // hold several, each with an id, a creation time and an expiry), so the
-  // entry answers `[{id, secret, created, expires}]` where it used to answer
-  // the string. The registry hands each record back SERIALIZED, a JSON string
-  // per value, so it is parsed here; an object is accepted too. What a job
-  // presents is the secret, so that is the value compared — the record as a
-  // whole would never equal it and would report a secret that is there as
-  // missing.
-  return list.map(function (one) {
-    var record = one;
-    if (typeof one === "string" && one.charAt(0) === "{") {
-      try {
-        record = JSON.parse(one);
-      } catch (e) {
-        record = one;
-      }
-    }
-    if (record !== null && typeof record === "object" &&
-        typeof record.secret === "string") {
-      return record.secret;
-    }
-    return String(one);
-  });
+  return list.map(String);
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +505,7 @@ async function provision(base, spec) {
 
   var identifier = String(spec.identifier);
   var protocols = (spec.protocols || []).map(String);
-  var fields = spec.fields || {};
+  var fields = await declaredScopeFields(base, spec.fields || {});
 
   if (!(await registryAvailable(base))) {
     // Loud, and NOT a failure: a suite pointed at a deployed service that
@@ -589,6 +610,20 @@ async function reconcile(base, identifier, protocols, fields) {
         "\" was refused: " + JSON.stringify(wrote.errors || wrote));
       continue;
     }
+    // `oauthScope` IS A SIGHTING (iya-sts #708): the token endpoint writes
+    // it as the client's requests arrive, and an update may not add to it
+    // (STS-REG-0361), even a value already there. A create may still seed
+    // it, so a job re-run against an entry an earlier run created asks for
+    // nothing new: a value the entry already holds is skipped, and a NEW one
+    // is sent and refused, whose message names oauthAllowedScope — the
+    // attribute a job declaring what it may ask for means.
+    if (name === "oauthScope") {
+      var current = await entryOf(base, identifier);
+      var seen = valuesOf(heldValues(((current || {}).fields || {})[name]));
+      values = values.filter(function (one) {
+        return seen.indexOf(one) < 0;
+      });
+    }
     for (var v = 0; v < values.length; v++) {
       var added = await adminPost(base, "/applications/add", {
         application: identifier, attribute: name, value: values[v]
@@ -614,6 +649,49 @@ async function reconcile(base, identifier, protocols, fields) {
 // job is about to USE is on the entry, because that is the whole claim
 // pre-registration makes.
 // ---------------------------------------------------------------------------
+// WHAT AN ENTRY HOLDS, AS THE STRINGS A JOB PROVISIONED. A client secret is
+// a RECORD since rcbj/iya-sts@2dc251b4 — `{id, secret, created, expires}`,
+// several per application — where it was the bare string, so a record is
+// read as its `secret`. The management API answers each record as its JSON
+// TEXT (the stored value, opened where it was sealed), so a string that
+// parses as an object carrying `secret` is a record too. A plain string,
+// which an sts before that change returns, is read as itself, so one file
+// runs against both.
+function recordOf(one) {
+  log.debug("Entering recordOf().");
+  if (one && typeof one === "object") {
+    log.debug("Leaving recordOf().");
+    return one;
+  }
+  if (typeof one !== "string" || one.charAt(0) !== "{") {
+    log.debug("Leaving recordOf().");
+    return null;
+  }
+  try {
+    var parsed = JSON.parse(one);
+    log.debug("Leaving recordOf().");
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (e) {
+    // Not JSON: an ordinary value that happens to start with a brace.
+    log.debug("Caught in recordOf(): " + ((e && e.message) || e));
+    log.debug("Leaving recordOf().");
+    return null;
+  }
+}
+
+function heldValues(value) {
+  log.debug("Entering heldValues().");
+  var list = value === undefined || value === null ? [] :
+    (Array.isArray(value) ? value : [value]);
+  log.debug("Leaving heldValues().");
+  return list.map(function (one) {
+    var record = recordOf(one);
+    return record &&
+           Object.prototype.hasOwnProperty.call(record, "secret") ?
+      record.secret : one;
+  });
+}
+
 function assertMatches(entry, identifier, protocols, fields) {
   log.debug("Entering assertMatches(). identifier=" + identifier);
   assert.strictEqual(entry.identifier, identifier,
@@ -635,7 +713,16 @@ function assertMatches(entry, identifier, protocols, fields) {
   var held = entry.fields || {};
   Object.keys(fields).forEach(function (name) {
     var want = valuesOf(fields[name]);
-    var got = valuesOf(held[name]);
+    var got = valuesOf(heldValues(held[name]));
+    // A CREDENTIAL IS ANSWERED MASKED (iya-sts #446): no GET of the
+    // management API carries a credential's value, so the entry says the
+    // attribute is SET and not what it holds. That is all that can be
+    // compared, and it is compared: set, where the job asked for a value.
+    if (got.length && got.every(function (one) {
+      return one === "(set — not returned)";
+    })) {
+      return;
+    }
     want.forEach(function (one) {
       assert.ok(got.indexOf(one) >= 0,
         "\"" + identifier + "\" should carry " + name + "=" + one +
@@ -1069,6 +1156,145 @@ async function delegateAll(base, specs) {
   return made;
 }
 
+// ---------------------------------------------------------------------------
+// WHO MAY ACT FOR WHOM: iya-sts's DELEGATION POLICY (its #108 and #186).
+//
+// `delegate()` above is the OAuth PERMISSION register — which scopes a client
+// may ask for on another application's API. This is a different register and
+// it governs a different question: whether one party may ACT for a subject
+// toward another at all. Since #186 iya-sts asks one issuance policy for every
+// RFC 8693 token exchange, every WS-Trust OnBehalfOf / ActAs, every Kerberos
+// S4U2Self / S4U2Proxy and GNAP's two acts, over attributes on the
+// application entries — so a delegation hop that worked against an
+// unconfigured registry is refused (Kerberos in every mode; the others in
+// product, and recorded as "WOULD HAVE BEEN REFUSED" in development).
+//
+// The attributes, as that service's common/CLAUDE.md (3az) names them:
+//
+//   appAllowedToDelegateTo     on S (or the actor): the applications it may
+//                              hand a subject to — msDS-AllowedToDelegateTo
+//   appAllowedToActOnBehalfOf  on R: who it accepts acting for others —
+//                              msDS-AllowedToActOnBehalfOfOtherIdentity
+//   appDelegationSemantics     on an actor: `delegation` and/or
+//                              `impersonation`; EMPTY means delegation only,
+//                              and in Kerberos `impersonation` is what makes
+//                              an S4U2Self ticket forwardable
+//
+// This suite tests the DEBUGGER, so the configuration is deliberately
+// PERMISSIVE: both semantics on every actor, so a job's choice of OnBehalfOf
+// or ActAs is never what decides. Every write is `add`, which is idempotent
+// and safe to race with a sibling job naming the same entry. The default
+// semantics is left alone for that reason — two jobs would fight over one
+// value, and a request that names its semantics never reads it.
+//
+// `create` (optional) makes the entry when there is none — a Kerberos service
+// nothing has sighted yet — with the fields given; without it a missing entry
+// is a failure, because a policy written onto nothing is a hop that will be
+// refused as an unregistered target.
+// ---------------------------------------------------------------------------
+var BOTH_SEMANTICS = ["delegation", "impersonation"];
+
+async function allowDelegation(base, spec) {
+  log.debug("Entering allowDelegation(). application=" +
+            (spec && spec.application));
+  if (!base) {
+    log.debug("Leaving allowDelegation(). No iya-sts base.");
+    return null;
+  }
+  assert.ok(spec && spec.application,
+    "allowDelegation() needs the application whose entry carries the rule.");
+  var identifier = String(spec.application);
+  var wants = {
+    appDelegationSemantics: (spec.semantics || BOTH_SEMANTICS).map(String),
+    appAllowedToDelegateTo: (spec.delegatesTo || []).map(String),
+    appAllowedToActOnBehalfOf: (spec.acceptsFrom || []).map(String)
+  };
+
+  var entry = await entryOf(base, identifier);
+  if (!entry && spec.create) {
+    var made = await adminPost(base, "/applications/create", {
+      identifier: identifier,
+      name: spec.create.name || identifier,
+      protocols: spec.create.protocols || [],
+      fields: spec.create.fields || {}
+    });
+    assert.ok(made.ok || (made.errors || []).some(function (one) {
+      return /already in this registry/i.test(String(one));
+    }), "creating \"" + identifier + "\" to carry its delegation rule was " +
+        "refused: " + JSON.stringify(made.errors || made));
+    entry = await entryOf(base, identifier);
+  }
+  assert.ok(entry,
+    "iya-sts's registry has no application \"" + identifier + "\" to carry " +
+    "a delegation rule. Provision it first: the policy refuses a hop to or " +
+    "from an application it does not know.");
+
+  var names = Object.keys(wants);
+  for (var n = 0; n < names.length; n++) {
+    var name = names[n];
+    if (!wants[name].length) {
+      continue;
+    }
+    if (!(await registryEditable(base, name))) {
+      log.warn("[delegation] iya-sts's registry does not know " + name +
+               ", so " + identifier + " is left without it. That service " +
+               "predates its delegation policy (#108, #186).");
+      continue;
+    }
+    for (var v = 0; v < wants[name].length; v++) {
+      var added = await adminPost(base, "/applications/add", {
+        application: identifier, attribute: name, value: wants[name][v]
+      });
+      assert.ok(added.ok,
+        "adding " + name + "=" + wants[name][v] + " to \"" + identifier +
+        "\" was refused: " + JSON.stringify(added.errors || added));
+    }
+  }
+
+  // Read back: what the registry holds, not what the writes said.
+  var after = await entryOf(base, identifier);
+  names.forEach(function (name) {
+    var held = valuesOf(heldValues(((after || {}).fields || {})[name]));
+    wants[name].forEach(function (value) {
+      if (!editableByBase[base] || !editableByBase[base][name]) {
+        return;
+      }
+      assert.ok(held.indexOf(value) >= 0,
+        "\"" + identifier + "\" should hold " + name + "=" + value +
+        " and holds " + JSON.stringify(held) + ".");
+    });
+  });
+  log.info("[delegation] " + identifier + ": semantics " +
+           wants.appDelegationSemantics.join(", ") +
+           (wants.appAllowedToDelegateTo.length
+             ? "; delegates to " + wants.appAllowedToDelegateTo.join(", ")
+             : "") +
+           (wants.appAllowedToActOnBehalfOf.length
+             ? "; accepts " + wants.appAllowedToActOnBehalfOf.join(", ")
+             : "") +
+           (spec.why ? " — " + spec.why : "") + ".");
+  log.debug("Leaving allowDelegation().");
+  return after;
+}
+
+// One hop, both ends: the actor (which is S wherever the token it presents was
+// issued to it) delegates to the target, and the target accepts the actor.
+// Writing both halves means the hop is allowed whichever of the policy's two
+// routes — S's list or R's — it is judged by.
+async function allowHop(base, spec) {
+  log.debug("Entering allowHop(). " + (spec && spec.actor) + " -> " +
+            (spec && spec.target));
+  if (!base) {
+    log.debug("Leaving allowHop(). No iya-sts base.");
+    return;
+  }
+  await allowDelegation(base, { application: spec.actor,
+    delegatesTo: [spec.target], create: spec.createActor, why: spec.why });
+  await allowDelegation(base, { application: spec.target,
+    acceptsFrom: [spec.actor], create: spec.createTarget, why: spec.why });
+  log.debug("Leaving allowHop().");
+}
+
 // Several applications, in order. Sequential rather than concurrent on purpose:
 // they are three or four sub-second calls each, and a Promise.all here would
 // interleave writes to one registry for no gain that anybody would notice.
@@ -1196,43 +1422,25 @@ async function authorizationCode(base, opts) {
     "the authorization request for " + opts.clientId + " should reach the " +
     "sign-in screen; it answered " + first.status + " " + screenAt + " " +
     String(await first.text()).slice(0, 200));
-  var screen = await fetch(absolute(screenAt), { redirect: "manual" });
-  var page = await screen.text();
-  var authnId = (page.match(/name="authn_id" value="([^"]+)"/) || [])[1];
-  var csrf = (page.match(/name="csrf_token" value="([^"]+)"/) || [])[1] || "";
-  assert.ok(authnId, "the sign-in screen carries no authn_id.");
-  // Posted back to the path the screen was served from — `/realm/<id>/authn/
-  // login` in a trust realm. A root-relative "/authn/login" resolved against
-  // the host posted every realm's sign-in to the DEFAULT realm's screen, which
-  // holds no such sign-in, so a flow in any realm could never complete.
+  // THE SCREEN OVER `/authn-api` (#571), through the one helper, at the
+  // base the screen was served under — `/realm/<id>` in a trust realm: a
+  // root-relative path resolved against the host signed every realm's
+  // sign-in in at the DEFAULT realm, which holds no such sign-in.
   var screenUrl = new URL(absolute(screenAt));
-  var signedIn = await fetch(screenUrl.origin + screenUrl.pathname, {
-    method: "POST", redirect: "manual",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ authn_id: authnId, username: opts.username,
-                                password: opts.password, action: "login",
-                                csrf_token: csrf }).toString()
-  });
-  // EVERY cookie the answer sets, as one Cookie header: a sign-in in a trust
-  // realm can set more than one, and keeping only the first dropped the
-  // session whenever it was not first.
-  var setCookies = typeof signedIn.headers.getSetCookie === "function"
-    ? signedIn.headers.getSetCookie()
-    : [String(signedIn.headers.get("set-cookie") || "")];
-  var cookie = setCookies.map(function (line) {
-    return String(line).split(";")[0];
-  }).filter(function (pair) {
-    return /=./.test(pair);
-  }).join("; ");
+  var signedIn = await authnSignin.submit(screenUrl.origin +
+    screenUrl.pathname.replace(/\/authn\/login$/, ""), screenUrl.toString(),
+    { action: "login", username: opts.username, password: opts.password });
+  // EVERY cookie the walk set, as one Cookie header: the shell's arrival
+  // cookie, upgraded in place by the sign-in, and whatever else it set.
+  var cookie = signedIn.next === "redirect" ? signedIn.cookie : "";
   if (!cookie) {
     // What the screen said, so a refusal names itself: a wrong password, a
     // rate limit, an account that needs something first.
-    var said = String(await signedIn.text()).replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ").slice(0, 400);
     assert.fail("signing " + opts.username + " in should establish a " +
-      "session; the screen answered " + signedIn.status + ": " + said);
+      "session; the screen answered " + signedIn.status + " " +
+      signedIn.next + ": " + JSON.stringify(signedIn.errors));
   }
-  var back = await fetch(absolute(signedIn.headers.get("location") || url),
+  var back = await fetch(signedIn.location || absolute(url),
                          { headers: { Cookie: cookie }, redirect: "manual" });
   var location = back.headers.get("location") || "";
   var settled = await consentScreen.settleAuthorization({
@@ -1303,5 +1511,9 @@ module.exports = {
   expose: expose,
   grantPermissions: grantPermissions,
   delegate: delegate,
-  delegateAll: delegateAll
+  delegateAll: delegateAll,
+  // iya-sts's delegation POLICY — who may act for whom, as opposed to which
+  // permissions a client holds.
+  allowDelegation: allowDelegation,
+  allowHop: allowHop
 };

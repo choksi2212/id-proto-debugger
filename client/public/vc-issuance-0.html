@@ -36,8 +36,16 @@
 <p class="vc-intro">There is more than one way for a credential to end up in a wallet, and
 <a href="https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html" target="_blank" rel="noopener noreferrer">OID4VCI</a>
 describes them in its <em>Use Cases</em> appendix. They differ in who starts, how the wallet learns what is on
-offer, and which grant does the authorizing &mdash; so pick one and the rest of the workflow follows it. You can
-come back and change it at any time; nothing you have already configured is lost.</p>
+offer, and which grant does the authorizing &mdash; so pick one and the rest of the workflow follows it, and
+change it whenever you like.
+<br>
+  <span class="tooltip"><label for="vc_issuer_site_url">Issuer website URL</label>
+    <span class="tooltiptext">The page on the issuer's own website where a person asks for a credential &mdash; a university's "get your diploma" page, say. The offer use cases below send you there. OpenID4VCI does not say what such a page is called, so this is a whole URL. Against an issuer with no such page, paste its Credential Offer into step 1 instead.</span>
+  </span>
+  <input type="text" class="stored" id="vc_issuer_site_url" name="vc_issuer_site_url" size="60"
+         placeholder="https://issuer.example/credentials" />
+  <input class="btn2" id="vc_issuer_site_save" type="button" value="Save" onclick="return vcissuance0.saveIssuerSite();" />
+</p>
 
 <div class="vc-usecases" id="vc_usecases">
   <!-- The buttons are generated from the use-case list in sd_jwt_vc.js, so this

@@ -506,30 +506,228 @@ async function plantIntoWallet(driver, opts) {
   log.debug("Leaving plantIntoWallet().");
 }
 
-// A fresh Authorization Request from the mock verifier, asking for jwt_vc_json.
-async function freshJwtVcJsonRequest(verifierBase, byReference) {
-  log.debug("Entering freshJwtVcJsonRequest(). byReference=" + !!byReference);
-  const query = ["format=" + encodeURIComponent(FORMAT)];
-  if (byReference) query.push("by=reference");
-  const r = await fetch(verifierBase + "/oid4vp/start?" + query.join("&"),
-      { redirect: "manual" });
-  const location = r.headers.get("location");
+// STARTING A VERIFICATION, AND READING WHAT WAS DECIDED, AT iya-sts's OWN
+// DOORS. They were the demonstration Verifier's `GET /oid4vp/start` (a 303 to
+// the wallet carrying the request) and `GET /oid4vp/result/:state`, which
+// iya-sts #591/#594 moved to its development companion; the doors every
+// starter uses now are `POST /admin-api/verifications/start` — which answers
+// the same wallet URL as JSON (`walletUrl`, the web wallet's page with the
+// request on its query string) — and `GET /admin-api/verifications?state=`,
+// whose answer carries the old result's members (`state`, `nonce`,
+// `requested`, `received`, `verdict`) plus `found`. The management API's
+// token is put on both by tools/attach-admin-token.js.
+async function startVerification(verifierBase, format, byReference) {
+  log.debug("Entering startVerification(). format=" + format +
+            " byReference=" + !!byReference);
+  const asked = { format: format, by: byReference ? "reference" : "value" };
+  const r = await fetch(verifierBase + "/admin-api/verifications/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json",
+               Accept: "application/json" },
+    body: JSON.stringify(asked)
+  });
+  const body = await r.json().catch(function () {
+    return null;
+  });
+  const location = body && body.ok ? String(body.walletUrl || "") : "";
   assert.ok(location,
-            "the verifier should redirect the wallet with its request.");
+    "the Verifier should start a " + format + " verification and name the " +
+    "wallet URL carrying its request; POST /admin-api/verifications/start " +
+    "answered " + r.status + ": " + JSON.stringify(body).slice(0, 300));
   const params = {};
   location.slice(location.indexOf("?") + 1).split("&").forEach(function (pair) {
     const eq = pair.indexOf("=");
     params[decodeURIComponent(pair.slice(0, eq))] =
            decodeURIComponent(pair.slice(eq + 1));
   });
-  log.debug("Leaving freshJwtVcJsonRequest(). state=" + params.state);
-  return { params: params, location: location };
+  log.debug("Leaving startVerification(). state=" + params.state);
+  return { params: params, location: location,
+           query: location.split("?")[1] || "" };
+}
+
+// THE VERIFIER'S WEBSITE, AS A PERSON USES IT. The chooser on step 0 sends
+// the browser to the Verifier's website (iya-sts's companion on this
+// suite's stacks, `/verifier`), which is ONE page with a form: the format to
+// ask for, by value or by reference, and whether the wallet is on this
+// device. This fills it the way a person would and presses Start; for a
+// wallet on this device the Verifier then redirects the browser to the
+// wallet (the debugger) with its request. `opts`: { By, until, format,
+// byReference, crossDevice, wait }.
+async function startAtTheVerifierWebsite(driver, opts) {
+  log.debug("Entering startAtTheVerifierWebsite(). format=" + opts.format);
+  const By = opts.By;
+  const until = opts.until;
+  await driver.wait(until.elementLocated(By.id("start")), opts.wait,
+    "the Verifier's website should show its start form (#start).");
+  const chosen = await driver.executeScript(
+    "var f = document.getElementById('format');" +
+    "var known = Array.prototype.map.call(f.options, function (o) {" +
+    "  return o.value; });" +
+    "if (known.indexOf(arguments[0]) < 0) { return known; }" +
+    "f.value = arguments[0];" +
+    "document.getElementById('by').value = arguments[1];" +
+    "document.getElementById('mode').value = arguments[2];" +
+    "return true;",
+    opts.format, opts.byReference ? "reference" : "value",
+    opts.crossDevice ? "cross-device" : "same-device");
+  assert.strictEqual(chosen, true,
+    "the Verifier's website offers no " + opts.format + " format; it " +
+    "offers " + JSON.stringify(chosen) + ".");
+  await driver.findElement(By.id("start")).click();
+  if (!opts.crossDevice) {
+    await driver.wait(until.urlContains("vc-presentation-1.html"), opts.wait,
+      "the Verifier should send the wallet its request.");
+  }
+  log.debug("Leaving startAtTheVerifierWebsite().");
+}
+
+// A PRE-AUTHORIZED CREDENTIAL OFFER, MADE THE WAY A PERSON MAKES ONE.
+//
+// A pre-authorized code IS the authorization for a credential about the
+// person it names, so iya-sts makes one only for the person asking, on
+// their own account page (`/portal/wallet`, iya-sts #589). The demonstration
+// issuer page that used to make one for a configured `oid4vci.offerUsername`
+// is gone (#594). So: sign the person in at the portal, choose the
+// configuration and the mode — `cross-device` (H.2) or `deferred` (H.3) — and
+// read what the page shows: the Transaction Code, and the offer URI behind
+// the QR code (by reference, `credential_offer_uri`). The browser is left on
+// the portal page; the caller hands the offer to the wallet.
+//
+// `opts`: { By, until, stsBase, username, password, mode, configuration,
+// wait, consentScreen }. Answers { txCode, offerUri, qr, page, username }.
+async function offerFromThePortalWallet(driver, opts) {
+  log.debug("Entering offerFromThePortalWallet(). mode=" + opts.mode);
+  const By = opts.By;
+  const until = opts.until;
+  const base = String(opts.stsBase).replace(/\/+$/, "");
+  const portal = base + "/portal/wallet";
+  // NOBODY SIGNED IN FIRST. The portal signs in through iya-sts's own
+  // /oauth2/authorize, so a sign-on session an earlier step of the same job
+  // left in this browser lets it straight in as THAT person, with no
+  // screen — and the offer is then made for them rather than for
+  // `opts.username`. So iya-sts's cookies go before the portal is opened.
+  // WebDriver deletes the cookies of the page it is on, which is why a page
+  // of that origin is loaded first.
+  await driver.get(base + "/healthcheck");
+  await driver.manage().deleteAllCookies();
+  await driver.get(portal);
+  await driver.wait(async function () {
+    return (await driver.findElements(By.id("wallet-make"))).length > 0 ||
+           (await driver.findElements(By.id("username"))).length > 0;
+  }, opts.wait, "the portal's wallet page drew neither its form nor the " +
+      "sign-in screen.");
+  assert.ok((await driver.findElements(By.id("username"))).length > 0,
+    "the portal let this browser in with no sign-in screen although its " +
+    "cookies for " + base + " were cleared, so the offer would be made for " +
+    "somebody other than " + opts.username + ".");
+  await driver.findElement(By.id("username")).sendKeys(opts.username);
+  await driver.findElement(By.id("password"))
+      .sendKeys(opts.password || "any-password");
+  await driver.findElement(By.id("kc-login")).click();
+  if (opts.consentScreen) {
+    await opts.consentScreen.passInBrowser(driver, By);
+  }
+  await driver.wait(until.elementLocated(By.id("wallet-make")), opts.wait,
+    "the portal's wallet page should offer to make an offer (#wallet-make).");
+  const chosen = await driver.executeScript(
+    "var c = document.querySelector('input[name=configuration][value=\"' +" +
+    "  arguments[0] + '\"]');" +
+    "var m = document.querySelector('input[name=mode][value=\"' +" +
+    "  arguments[1] + '\"]');" +
+    "if (!c || !m) { return Array.prototype.map.call(" +
+    "  document.querySelectorAll('input[name=configuration],input[name=mode]')," +
+    "  function (i) { return i.name + '=' + i.value; }); }" +
+    "c.click(); m.click(); return true;",
+    opts.configuration, opts.mode);
+  assert.strictEqual(chosen, true,
+    "the portal's wallet page does not offer " + opts.configuration + " in " +
+    "mode " + opts.mode + "; it offers " + JSON.stringify(chosen) + ".");
+  await driver.findElement(By.id("wallet-make")).click();
+  await driver.wait(until.elementLocated(By.id("tx_code")), opts.wait,
+    "making the offer should draw it, with its Transaction Code (#tx_code).");
+  const shown = await driver.executeScript(
+    "var qr = document.getElementById('offer_qr');" +
+    "return { txCode: document.getElementById('tx_code').textContent.trim()," +
+    "  offerUri: document.getElementById('offer_uri').textContent.trim()," +
+    "  qr: qr ? qr.tagName.toLowerCase() : ''," +
+    "  page: document.body.textContent };");
+  log.debug("Leaving offerFromThePortalWallet(). " +
+            shown.offerUri.slice(0, 60));
+  return { txCode: shown.txCode, offerUri: shown.offerUri, qr: shown.qr,
+           page: shown.page, username: opts.username };
+}
+
+// A REQUEST, GOT THE WAY A PERSON GETS ONE: the Verifier's website, its
+// form, and the redirect to the wallet. Answers what the wallet was handed —
+// `{ params, location, query }` parsed off the URL the browser landed on —
+// for the checks that need the request's state or DCQL query. `opts`:
+// { By, until, siteUrl, format, byReference, wait }.
+async function requestThroughTheVerifierWebsite(driver, opts) {
+  log.debug("Entering requestThroughTheVerifierWebsite().");
+  await driver.get(opts.siteUrl);
+  await startAtTheVerifierWebsite(driver, { By: opts.By, until: opts.until,
+    format: opts.format, byReference: !!opts.byReference, crossDevice: false,
+    wait: opts.wait });
+  const location = await driver.getCurrentUrl();
+  const params = {};
+  location.slice(location.indexOf("?") + 1).split("&").forEach(function (pair) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) {
+      params[decodeURIComponent(pair.slice(0, eq))] =
+             decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, " "));
+    }
+  });
+  log.debug("Leaving requestThroughTheVerifierWebsite(). state=" +
+            params.state);
+  return { params: params, location: location,
+           query: location.split("?")[1] || "" };
+}
+
+async function verificationResult(verifierBase, state) {
+  log.debug("Entering verificationResult().");
+  const r = await httpJson(verifierBase + "/admin-api/verifications?state=" +
+      encodeURIComponent(state));
+  log.debug("Leaving verificationResult(). " + r.status);
+  return r;
+}
+
+// THE VERIFIER'S VERDICT ON WHAT THE PAGES JUST SENT. Presentation step 3
+// shows what the Verifier ANSWERED — all OID4VP gives a wallet — and the
+// check-by-check verdict is the Verifier's own record, read here where an
+// operator reads it (`/admin-api/verifications?state=`), by the `state` the
+// wallet kept with what it sent. Waits for step 3 to report the answer first.
+// `opts`: { By, until, wait, verifierBase, waitForStatus }.
+async function verdictOfWhatWasSent(driver, opts) {
+  log.debug("Entering verdictOfWhatWasSent().");
+  await driver.wait(async function () {
+    const t = await driver.findElement(opts.By.id("vp_verifier_status"))
+        .getText();
+    return /accepted the response|refused the response/.test(t);
+  }, opts.wait, "step 3 never reported what the Verifier answered.");
+  const state = await driver.executeScript(
+    "var p = JSON.parse(localStorage.getItem('sdjwtvp_presentation') || " +
+    "'{}'); return p.state || '';");
+  assert.ok(state, "step 3 holds no state for what was sent, so the " +
+            "Verifier's verdict on it cannot be looked up.");
+  const doc = await verdictFor(opts.verifierBase, state);
+  assert.ok(doc.verdict, "the Verifier has recorded no verdict for state " +
+            state + ": " + JSON.stringify(doc).slice(0, 300));
+  log.debug("Leaving verdictOfWhatWasSent(). ok=" + doc.verdict.ok);
+  return doc.verdict;
+}
+
+// A fresh Authorization Request from iya-sts's Verifier, asking for
+// jwt_vc_json.
+async function freshJwtVcJsonRequest(verifierBase, byReference) {
+  log.debug("Entering freshJwtVcJsonRequest(). byReference=" + !!byReference);
+  const request = await startVerification(verifierBase, FORMAT, byReference);
+  log.debug("Leaving freshJwtVcJsonRequest(). state=" + request.params.state);
+  return { params: request.params, location: request.location };
 }
 
 async function verdictFor(verifierBase, state) {
   log.debug("Entering verdictFor().");
-  const r = await httpJson(verifierBase + "/oid4vp/result/" +
-      encodeURIComponent(state));
+  const r = await verificationResult(verifierBase, state);
   assert.ok(r.ok, "the verifier should report what it decided, got HTTP " +
             r.status);
   log.debug("Leaving verdictFor().");
@@ -574,8 +772,26 @@ async function provisionWallet(issuerBase, options) {
     fields.oauthRedirectUri = [].concat(opts.redirectUris);
     fields.oauthResponseType = ["code"];
   }
+  // THE SCOPES ARE DECLARED, ON `oauthAllowedScope` (iya-sts #708). They
+  // were written to `oauthScope`, which is what a client has ASKED FOR and is
+  // written by the token endpoint as requests arrive; an update may no longer
+  // add to it (STS-REG-0361), so the second job to reconcile this shared
+  // wallet was refused. RFC 7591 section 2's `scope` — "the list that the
+  // client can use when requesting access tokens" — is the declaration.
+  //
+  // AND IT IS EVERY CREDENTIAL SCOPE THIS ISSUER OFFERS, not only the ones
+  // this job asks for: WALLET_CLIENT_ID is one entry shared by every OID4VC
+  // job, a product-mode authorization server issues a client that declares
+  // anything only what it declares, and a declaration naming one job's scope
+  // would narrow every other job's request to nothing until it reconciled.
   if (opts.scopes && opts.scopes.length) {
-    fields.oauthScope = [].concat(opts.scopes);
+    const declared = [].concat(opts.scopes);
+    credentialScopes(await issuerMetadata(issuerBase)).forEach(function (one) {
+      if (declared.indexOf(one) < 0) {
+        declared.push(one);
+      }
+    });
+    fields.oauthAllowedScope = declared;
   }
   const entry = await registry.provision(registry.stsBaseFor(issuerBase), {
     identifier: clientId,
@@ -647,5 +863,11 @@ module.exports = {
   didJwkFor: didJwkFor,
   plantIntoWallet: plantIntoWallet,
   freshJwtVcJsonRequest: freshJwtVcJsonRequest,
+  startVerification: startVerification,
+  startAtTheVerifierWebsite: startAtTheVerifierWebsite,
+  requestThroughTheVerifierWebsite: requestThroughTheVerifierWebsite,
+  offerFromThePortalWallet: offerFromThePortalWallet,
+  verificationResult: verificationResult,
+  verdictOfWhatWasSent: verdictOfWhatWasSent,
   verdictFor: verdictFor
 };

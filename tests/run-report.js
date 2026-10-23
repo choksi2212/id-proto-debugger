@@ -295,32 +295,6 @@ const JOB_LOCKS = {
   "spiffe_protocol.js": "sts-spiffe",
   "spiffe_page.js": "sts-spiffe",
   "api_spiffe.js": "sts-spiffe",
-  // The mock's SAML 1.1 identity provider settings. `sts_saml11.js` turns
-  // `saml11.signAssertion` and `saml11.signResponse` OFF one at a time to check
-  // that an unsigned document is recognised as one, flips `defaultProfile` to
-  // artifact, and turns `autocreateApplications` off so a relying party nobody
-  // registered is refused. Every one of those is restored, and none of them
-  // instantly — so a browser round trip running inside that window gets an
-  // UNSIGNED assertion, or a profile it did not ask for, or a 400 for a relying
-  // party it just named. `saml11_sso.js` asserts a valid signature and the
-  // confirmation method for its binding, so it would fail naming the signature
-  // or the profile and nothing would say which other job did it.
-  //
-  // The three binding jobs therefore serialise against each other as well,
-  // which is the cost of a single-name lock and is worth it here: the
-  // alternative is a flake that appears only in the pool and passes on its own.
-  // `saml11_options.js` is deliberately absent — it needs no identity provider
-  // at all, so nothing it does can collide with this.
-  "sts_saml11.js": "sts-saml11",
-  // SAML 2.0 ENCRYPTION SHARES THE SAML 2.0 LOCK, and it has to: it turns
-  // `saml2.encryptAssertion` and the two algorithm rows on for service
-  // providers of its own, and it flips `saml2EncryptLogoutNameId` — but it
-  // also drives /saml2/slo, which ENDS WHATEVER SESSION the cookie jar it
-  // shares with a concurrent binding job is holding. A saml_sso.js round trip
-  // running inside that window loses its session mid-flow and fails naming the
-  // sign-in screen, with nothing to say which other job did it.
-  "sts_saml_encryption.js": "saml2",
-  "saml11_sso.js": "sts-saml11",
   // The mock's SPNEGO SIGN-IN, which is `krb5.spnegoAuthentication` — a
   // process-wide setting on a shared service. `kerberos_spnego_signin.js` turns
   // it OFF to assert that a closed door answers 403 naming the setting and
@@ -962,11 +936,14 @@ function buildJobs() {
   // run is happening; the SVGs land in this run's own report directory. See
   // docs/test-suite-map.md.
   //
-  // The mock only. It needs three clients nobody registered, a user with no
-  // password and a token endpoint that will exchange anything for anything —
-  // Keycloak would need all of that provisioned first, and the compliant realm
-  // has opinions about a public client and about a scope that grows, which is a
-  // different test.
+  // The mock only, in EITHER of its modes, and the job asks it which
+  // (`GET /admin-api/mode`). In development it needs nothing beyond the four
+  // entries; in product it also provisions what that mode refuses without —
+  // bob_end_user's password, a secret per confidential tier, the registered
+  // callback, the declared scopes and grants, the CORS origin, and the
+  // delegation policy's impersonation rules — through the same /admin-api
+  // token every job here is given. Keycloak would need all of that and a
+  // token-exchange permission per pair, which is a different test.
   if (env.WSTRUST_STS_URL) {
     jobs.push({
       name: "OAuth2 delegation chain (OIDC sign-in, then two RFC 8693 hops " +
@@ -1495,18 +1472,6 @@ function buildJobs() {
       name: "OAuth2 Authorization Server Metadata (RFC 8414 endpoint + " +
           "debugger Metadata Source)",
       script: "oauth2_metadata_rfc8414.js",
-      env: { WSTRUST_STS_URL: env.WSTRUST_STS_URL },
-    });
-  }
-
-  // The mock authorization server the STS service hosts: every endpoint its
-  // RFC 8414 document advertises answers, with real RS256 tokens that verify
-  // against the advertised JWKS. No browser — it drives the endpoints directly.
-  if (env.WSTRUST_STS_URL) {
-    jobs.push({
-      name: "OAuth2 Authorization Server endpoints (the STS mock's authorize " +
-          "/ token / introspect / revoke / register)",
-      script: "oauth2_sts_endpoints.js",
       env: { WSTRUST_STS_URL: env.WSTRUST_STS_URL },
     });
   }
@@ -2288,95 +2253,6 @@ function buildJobs() {
     env: {},
   });
 
-  // The AS exchange end to end: the wallet-side codec (common/krb5) against the
-  // mock KDC (the sts/ submodule), over a real socket, through the api's relay. It
-  // starts the KDC in-process on an ephemeral port, so it needs no docker and no
-  // running service.
-  //
-  // This is the first test that puts a CLIENT and a KDC on opposite ends of a wire
-  // and makes them agree — a different claim from the vector tests, because the two
-  // disagree in ways neither can detect alone: a key usage number one folds in and
-  // the other does not, a salt one derives from the principal name and the other
-  // from configuration, a nonce one echoes and the other regenerates. It is still
-  // NOT proof of interoperability: both ends are this repository's code, and the
-  // interoperability evidence is the MIT krb5 / Samba AD exchange in phase 4.
-  //
-  // Most of it is the negative half, which is the product: KDC_ERR_ETYPE_NOSUPP to
-  // an RC4-only client against a hardened account (the 2026 case), a locked
-  // account, an expired password, a wrong salt reported as PREAUTH_FAILED with
-  // ETYPE-INFO2 re-sent so the client can find out, and a clock outside the
-  // tolerance. Mutation-tested: nine deliberate defects in the KDC, all caught —
-  // including a regenerated nonce, a pre-authent flag set when no pre-authentication
-  // happened, and a computer account salted like a user.
-  // Node only, never skipped.
-  jobs.push({
-    name: "Kerberos AS exchange (the codec against the mock KDC: the two-message dance, refusals)",
-    script: "krb5_as_exchange.js",
-    env: {},
-  });
-
-  // The rest of the protocol: TGS then AP, with mutual authentication and
-  // per-message tokens. The client is common/krb5; the KDC and the protected service
-  // are the sts/ submodule's, started in-process on ephemeral ports so this needs no
-  // docker and no running service.
-  //
-  // The AS test gets a TGT, which is the easy half. This one is a ticket being
-  // PRESENTED to something that decrypts it, checks it, and proves itself back —
-  // until something does that, "the ticket looks right" is the strongest claim
-  // available about any of it.
-  //
-  // Four things here fail in ways nothing else catches: a TGS-REQ carries the TGT
-  // inside a PA-TGS-REQ whose value is an entire AP-REQ, whose Authenticator
-  // checksums the ENCODED request body (re-encode it and the checksum covers
-  // something else); the TGS-REP is at key usage 8 or 9 depending on whether a subkey
-  // was sent, and both paths are exercised; the 0x8003 checksum is not a checksum and
-  // its integers are LITTLE-endian; and mutual authentication is an ECHO that has to
-  // be CHECKED, not merely requested.
-  //
-  // It found a real bug on its first run: KerberosTime carries no fractional seconds,
-  // so the wire ctime is truncated to the second and the client was comparing the
-  // AP-REP's echo against a millisecond-precision Date — accusing a correct service
-  // of not being itself.
-  //
-  // The negatives are the point: a replayed Authenticator, a ticket for the wrong
-  // service, a stale key version, a request body swapped after signing, a clock
-  // outside the tolerance, a checksum that is not 0x8003, and a forged echo.
-  // Mutation-tested: the KDC's checksum check, the service's replay cache, its
-  // ticket-is-for-me check, and the 0x8003 byte order — all caught.
-  //
-  // Phases 4 and 5 grew it well beyond its name, because each addition needs the live
-  // exchange rather than a fixture:
-  //
-  //  * **the PAC the KDC actually minted**, in BOTH kinds of ticket. In a TGT the service
-  //    key and the krbtgt key are the same key, so a KDC using the wrong one for the
-  //    server signature passes every TGT test ever written and issues service tickets no
-  //    Windows service accepts. Only the service ticket separates them.
-  //  * **cross-realm referrals**, chased end to end: a referral is an ordinary successful
-  //    TGS-REP whose `sname` is not what was asked for, and a client that does not compare
-  //    those two presents a ticket-granting ticket to a web server. The PAC is re-signed by
-  //    the target realm, and the test proves the OLD signatures no longer verify — if they
-  //    did, nothing had been re-signed.
-  //  * **S4U2Self and S4U2Proxy, authorized both ways**: classic constrained delegation
-  //    (`msDS-AllowedToDelegateTo` on the front end) and RBCD (`msDS-AllowedToActOn-
-  //    BehalfOfOtherIdentity` on the back end), with the asymmetries that make RBCD the
-  //    easier path — and five refusals, without which the successes prove nothing.
-  //  * **renewals**, which preserve authtime and cap at renew-till. That test contains the
-  //    only deliberate sleep in the file: KerberosTime has one-second resolution and the
-  //    test runs inside one second, so without a clock boundary a KDC that reset authtime
-  //    on renewal produced an identical value and the mutation went undetected.
-  //
-  // Thirty-three further mutations were used to develop those sections and all thirty-three
-  // fail them. Four were caught only after the test was strengthened, each a real gap: a
-  // realm-aware principal lookup that needed a client NATIVE to the second realm, a PAC
-  // domain SID nothing asserted, the delegation flag that is invisible where it is set, and
-  // a vacuous authtime comparison that compared a value with itself.
-  // Node only, never skipped.
-  jobs.push({
-    name: "Kerberos TGS + AP, the PAC, cross-realm referrals, S4U delegation and renewals",
-    script: "krb5_tgs_ap.js",
-    env: {},
-  });
-
   // The Kerberos codec exists TWICE — common/krb5 for the browser and the api, and
   // a vendored copy in the sts/ submodule for the KDC, because compose builds that
   // service with `context: ./sts` and a Docker build cannot COPY from outside its
@@ -2424,32 +2300,6 @@ function buildJobs() {
   jobs.push({
     name: "SPNEGO codec (RFC 4178's NegTokenInit and NegTokenResp, byte by byte)",
     script: "krb5_spnego_codec.js",
-    env: {},
-  });
-
-  // SPNEGO over HTTP end to end: RFC 4559 carrying RFC 4178 carrying RFC 4121
-  // carrying an AP-REQ. Node only — the mock KDC and the mock's Express app are
-  // started in-process on ephemeral ports — so it never skips.
-  //
-  // The NEGATIVES are the substantial half, deliberately: an acceptor that
-  // authenticates a good client looks finished and is worth very little. Ten of
-  // them, and the two that nothing else could catch are a mechListMIC computed
-  // over the `[0]`-tagged list (the ticket is perfect and the request is
-  // refused) and an edited mechanism list (everything else about the request is
-  // valid, which is exactly why the MIC is the only thing that can notice —
-  // that is the downgrade RFC 4178 section 5 exists to stop). The rest: no
-  // mechanism in common in both directions, a list with no token answered
-  // accept-incomplete rather than reject, a tampered MIC, a replayed AP-REQ, a
-  // ticket for another service, a TGT presented as one, a Basic Authorization
-  // header, bytes that are not a token, and a continuation with nothing to
-  // continue. Each asserts WHICH check fired, not merely that something was
-  // refused — and the ones carrying a KRB-ERROR assert the error code inside
-  // the responseToken, because SPNEGO's negState has no reason field at all and
-  // an acceptor that swallows the mechanism's error leaves a rejection
-  // indistinguishable from a wrong password.
-  jobs.push({
-    name: "SPNEGO over HTTP (the handshake, and the ten negatives that make an acceptor worth anything)",
-    script: "krb5_spnego_http.js",
     env: {},
   });
 
@@ -2513,10 +2363,12 @@ function buildJobs() {
     env: {},
   });
 
-  // Delegation, run TWICE — once per KDC — because that is the only way a
-  // divergence between the mock and Active Directory becomes visible.
+  // Delegation against a REAL Windows KDC. It ran twice, once per KDC, until
+  // 2026-10-23, when the iya-sts half moved to that service's own suite (it
+  // tested iya-sts rather than this debugger); what follows is why there were
+  // two.
   //
-  // tests/krb5_tgs_ap.js already drives S4U against the mock, and harder: it
+  // iya-sts's own suite drives S4U against its KDC, and harder: it
   // forges tickets and swaps keys, which no real domain controller can be asked
   // to do. But it only ever asks the mock, and the mock was written from the
   // same reading of [MS-SFU] as the client it checks — so a shared misreading
@@ -2529,7 +2381,9 @@ function buildJobs() {
   // same terms as krb5_real_dc.js: it costs money and no launcher starts it.
   {
     const delegationIdps = [
-      { key: "mock", label: "mock KDC", skip: null, env: {} },
+      // The iya-sts half (the in-process KDC) moved to iya-sts's own suite
+      // on 2026-10-23: it tested that service rather than this debugger.
+      // The Windows half stays — it drives this project's Kerberos client.
       {
         key: "windows",
         label: "real Windows KDC",
@@ -2574,7 +2428,7 @@ function buildJobs() {
   //
   // It has already earned its place. The capture showed that Windows Server
   // 2025 sends NO s2kparams in ETYPE-INFO2 — it relies on the RFC 3962 default
-  // — while the mock KDC always sends one and krb5_as_exchange.js asserts it is
+  // — while iya-sts's KDC always sends one and its own suite asserts it is
   // there. A client that required the field would pass this whole suite and
   // fail against every real domain, reporting a wrong password. Never skipped:
   // the capture is committed.
@@ -2664,7 +2518,7 @@ function buildJobs() {
     env: {},
   });
 
-  // The Kerberos AS exchange PAGE. krb5_as_exchange.js already drives the same
+  // The Kerberos AS exchange PAGE. iya-sts's own suite drives the same
   // exchange with no browser, so this job covers only what needs one: that the
   // bundle is registered in BOTH client/build.js and client/Dockerfile, that the
   // api's CORS allowlist actually lets the page call POST /krb5/kdc (a failure no
@@ -2730,16 +2584,19 @@ function buildJobs() {
       STS_URL: env.STS_URL || "https://localhost:8081",
       KRB5_KDC_HOST: env.KRB5_KDC_HOST || "sts",
       KRB5_KDC_PORT: env.KRB5_KDC_PORT || "88",
-      KRB5_SERVICE_HOST: env.KRB5_SERVICE_HOST || "sts",
+      // The ticket-protected service is iya-sts's COMPANION since iya-sts
+      // #595; with no KRB5_SERVICE_HOST the job takes COMPANION_URL's host.
+      KRB5_SERVICE_HOST: env.KRB5_SERVICE_HOST || "",
       KRB5_SERVICE_PORT: env.KRB5_SERVICE_PORT || "8888",
+      COMPANION_URL: env.COMPANION_URL || "http://localhost:9700",
     },
   };
   if (kerberosPagesSkip) tgsApPageJob.skip = kerberosPagesSkip;
   jobs.push(tgsApPageJob);
 
   // The SPNEGO page, and the two pages a user is ROUTED THROUGH to feed it.
-  // krb5_spnego_http.js already drives the protocol harder than this does with
-  // no browser, so this job covers only what needs one:
+  // iya-sts's own suite drives the protocol harder than this does with no
+  // browser, so this job covers only what needs one:
   //
   //  * **the routing loop**, which is the whole reason this is a workflow. The
   //    SPNEGO page cannot obtain a ticket — that is the AS page and then the
@@ -2789,9 +2646,13 @@ function buildJobs() {
       // name; STS_URL is browser-facing and follows a different rule (see
       // tests/CLAUDE.md on WSFED_STS_METADATA_URL), which is why this is its
       // own variable rather than derived.
+      // iya-sts's companion holds the protected page since iya-sts #595.
       KRB5_SPNEGO_URL: env.KRB5_SPNEGO_URL ||
         (env.KRB5_SPNEGO_HOST ? "http://" + env.KRB5_SPNEGO_HOST +
-          "/spnego/protected" : "https://sts:8081/spnego/protected"),
+          "/spnego/protected" :
+          (env.COMPANION_URL || "http://localhost:9700") +
+          "/spnego/protected"),
+      COMPANION_URL: env.COMPANION_URL || "http://localhost:9700",
     },
   };
   if (kerberosPagesSkip) spnegoPageJob.skip = kerberosPagesSkip;
@@ -3246,9 +3107,11 @@ function buildJobs() {
         "follow them, and the reset that starts over)",
     script: "caep_page.js",
     env: {
-      // NO API_URL. This job needs no backend — see the note at the top of
-      // caep_page.js — and it ran against a deployed static site with one
-      // for months, which is a job carrying an address it never dialled.
+      // API_URL only where this target HAS an api: the page's pushes land in
+      // its inbox until #363 (see the note at the top of caep_page.js). A
+      // static site gets none, and the job sends its events nowhere.
+      API_URL: env.LDAP_AVAILABLE === "false" ? "" :
+          (env.API_URL || "https://localhost:4000"),
       SSF_TRANSMITTER_URL: env.SSF_TRANSMITTER_URL || env.STS_URL ||
           "https://localhost:8081",
       // The two the OAuth2 / OIDC jobs are given, because this one drives
@@ -3464,8 +3327,8 @@ function buildJobs() {
   jobs.push(spiffePageJob);
 
   // The DELEGATION page: S4U2Self, S4U2Proxy with both authorization routes, forwarding
-  // and renewal. tests/krb5_tgs_ap.js already drives every one of those exchanges with no
-  // browser, so this job covers only what needs one:
+  // and renewal. iya-sts's own suite drives every one of those exchanges with
+  // no browser, so this job covers only what needs one:
   //
   //  * **the credential handoff** — the service's own TGT comes from the AS page and the
   //    evidence ticket from S4U2Self is stored for S4U2Proxy to find, under keys the
@@ -3506,6 +3369,9 @@ function buildJobs() {
     script: "kerberos_delegation_page.js",
     env: {
       API_URL: env.API_URL || "https://localhost:4000",
+      // iya-sts's management API, where the job writes the delegation rules
+      // its S4U2Self and S4U2Proxy cases need (iya-sts #186).
+      STS_URL: env.STS_URL || "https://localhost:8081",
       KRB5_KDC_HOST: env.KRB5_KDC_HOST || "sts",
       KRB5_KDC_PORT: env.KRB5_KDC_PORT || "88",
     },
@@ -3734,6 +3600,10 @@ function buildJobs() {
         WSTRUST_STS_URL: env.WSTRUST_STS_URL || "",
         OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
       },
+      skip: "SKIPPED BY DECISION until rcbj/id-proto-debugger#366: its " +
+        "fixtures came from iya-sts's GET /did/generate, which iya-sts #594 " +
+        "deleted, and nothing reachable over HTTP now mints a credential " +
+        "under iya-sts's own did:web key.",
     });
     // THE MOCK'S OWN /admin AND /admin-api SURFACE IS NOT TESTED FROM HERE.
     // Four jobs used to sit at this point — sts_metadata.js (the metadata
@@ -3848,22 +3718,6 @@ function buildJobs() {
   // presentation, a KB-JWT signed by the wrong key, an invented Disclosure, one
   // removed after signing, and a claim the verifier asked for withheld.
   if (env.WSTRUST_STS_URL) {
-    // The SERVER half of DPoP, over HTTP with no browser: all twelve RFC 9449
-    // section 4.3 proof checks, the cnf.jkt binding on access and refresh
-    // tokens, the dpop_jkt code binding, jti replay detection, and the nonce
-    // handshake in both of its shapes. It is almost entirely negatives, because
-    // a DPoP server that issues bound tokens and accepts good proofs looks
-    // finished and can be worth nothing — the value is all in what it refuses.
-    // Needs only the STS.
-    jobs.push({
-      name: "DPoP server checks (RFC 9449: the twelve proof checks, binding, " +
-          "replay, nonces)",
-      script: "sts_dpop.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
     // The SIGNED and ENCRYPTED UserInfo response (OIDC Core section 5.3.2),
     // over HTTP with no browser. It is a CROSS-IMPLEMENTATION check and that is
     // why it earns a job of its own: the mock produces every shape with node's
@@ -3885,15 +3739,6 @@ function buildJobs() {
       name: "UserInfo page reads signed, encrypted and nested responses " +
           "(OIDC Core 5.3.2, in the browser)",
       script: "oidc_userinfo_protected_page.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
-    jobs.push({
-      name: "Client-supplied JWS verification (every advertised algorithm " +
-          "for client assertions and OID4VCI proofs)",
-      script: "sts_jws_verification.js",
       env: {
         WSTRUST_STS_URL: env.WSTRUST_STS_URL,
         OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
@@ -4255,33 +4100,22 @@ function buildJobs() {
 
   // ---------------------------------------------------------------------
   // SAML **1.1**, which since 2026-08-25 is a working profile on this page
-  // rather than a reference-only entry in a dropdown. THREE kinds of job, and
-  // the distinction between them is worth reading before adding a fourth.
+  // rather than a reference-only entry in a dropdown. TWO kinds of job here,
+  // and the distinction between them is worth reading before adding a third.
   //
   // 1. `saml11_sso.js` — the DEBUGGER's SAML 1.1 service provider, driven
   //    through its pages by a browser, once per binding. `saml_sso.js`'s
   //    sibling and deliberately its mirror image.
   // 2. `saml11_options.js` — which of the SP / Request settings apply to SAML
   //    1.1 and which are switched off. No identity provider at all.
-  // 3. `sts_saml11.js` — the mock STS's SAML 1.1 identity provider, driven
-  //    directly over HTTP with a relying party it writes itself, and almost
-  //    entirely NEGATIVES. It sits with `sts_dpop.js` and `vc_did.js`, which
-  //    is the family it belongs to.
   //
-  // **THERE IS NO KEYCLOAK HALF OF ANY OF THEM, and there will not be one.**
-  // Every other browser-SSO job in this section is pushed once per identity
-  // provider, because a mock that is quietly more permissive than the real
-  // thing passes every test written against it alone. That argument still
-  // holds and there is nothing to act on it with: Keycloak dropped SAML 1.1
-  // years ago. So the mock is the only identity provider here, and
-  // `sts_saml11.js` is what compensates — it writes the relying party ITSELF
-  // rather than importing the debugger's, in the same spirit as `sts_dpop.js`
-  // writing its own DPoP client, so a shared misunderstanding between the two
-  // ends of the exchange cannot pass unnoticed.
-  //
-  // The three binding jobs and `sts_saml11.js` share a JOB_LOCK — see the note
-  // beside it, which is the "read tests/CLAUDE.md before adding a test that
-  // configures a shared service" case exactly.
+  // **THERE IS NO KEYCLOAK HALF OF EITHER, and there will not be one**:
+  // Keycloak dropped SAML 1.1 years ago, so the mock is the only identity
+  // provider here. The mock's own SAML 1.1 identity provider — driven over
+  // HTTP with a relying party written independently, almost entirely
+  // negatives — was `sts_saml11.js` and is iya-sts's own job since the
+  // 2026-10 bump (its `tests/vendored/sts_saml11.js`); it left this suite
+  // with the JOB_LOCK it shared with these three.
   // ---------------------------------------------------------------------
   //
   // The SAML 1.1 metadata URL is the mock's PER-RELYING-PARTY descriptor, the
@@ -4339,66 +4173,6 @@ function buildJobs() {
     script: "saml11_options.js",
     env: {},
   });
-
-  // The mock STS's own SAML 1.1 identity provider, over HTTP with no browser:
-  // Browser/POST and Browser/Artifact end to end, the SOAP responder's four
-  // request types (which makes that service an attribute authority), the
-  // per-relying-party metadata, the NameIdentifier formats, and the four traps
-  // this profile hides — the confirmation method, the signature reference
-  // through the real AssertionID, an InResponseTo on a profile with no request,
-  // and the one-shot artifact.
-  //
-  // Gated on the STS alone, like the tests it sits with. It restores every
-  // setting it changes, through /admin-api/config/reset rather than by writing
-  // the old value back, so it leaves no runtime override behind for the next
-  // run against the same container — the mock's own suite reads that store and
-  // fails on a leftover override.
-  if (env.WSTRUST_STS_URL) {
-    jobs.push({
-      name: "SAML 1.1 identity provider on the mock STS (Browser/POST, " +
-          "Browser/Artifact, the SOAP responder, per-RP metadata)",
-      script: "sts_saml11.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
-  }
-
-  // SAML 2.0 ENCRYPTION on the mock STS, driven over HTTP with a service
-  // provider the test writes itself — its own RSA key pair, its own XML
-  // Encryption decryptor built on node's `crypto`, and a PKCS#1 v1.5 unwrap done
-  // with BigInt because node refuses `RSA_PKCS1_PADDING` for private decryption.
-  //
-  // NOTHING IS BORROWED FROM THE MOCK, which is `sts_dpop.js`'s rule and matters
-  // more here than anywhere else in this suite: if both ends of the encryption
-  // came from one implementation, a shared misunderstanding about where the IV
-  // lives or whether the GCM tag is appended would pass and interoperate with
-  // nobody.
-  //
-  // It is the counterpart of `saml_encrypted_sso.js` and does not replace it.
-  // That job proves the DEBUGGER can consume an encrypted assertion from
-  // Keycloak, in a browser, with the SP key in the page. This one proves the
-  // MOCK can produce one — and, mostly, that it REFUSES what it should: an
-  // altered ciphertext, an EncryptedID encrypted to somebody else's key, and a
-  // decrypted fragment that does not carry its own namespace.
-  //
-  // Gated on the STS alone, like the tests it sits with. It restores every
-  // setting it changes through /admin-api/config/reset rather than by writing
-  // the old value back, so it leaves no runtime override behind for the next
-  // run against the same container — the mock's own suite reads that store and
-  // fails on a leftover override.
-  if (env.WSTRUST_STS_URL) {
-    jobs.push({
-      name: "SAML 2.0 encryption on the mock STS (EncryptedAssertion, " +
-          "EncryptedID both ways, four ciphers x two key transports)",
-      script: "sts_saml_encryption.js",
-      env: {
-        WSTRUST_STS_URL: env.WSTRUST_STS_URL,
-        OID4VCI_ISSUER_URL: env.OID4VCI_ISSUER_URL || "",
-      },
-    });
-  }
 
   // SAML 2.0 EncryptedAssertion decryption: SSO against a SAML client with
   // saml.encrypt=true (provisioned in common.sh), so Keycloak returns an

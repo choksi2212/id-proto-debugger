@@ -1037,6 +1037,371 @@ async function everySignatureEtypeWorks() {
   log.debug("Leaving everySignatureEtypeWorks().");
 }
 
+// ---------------------------------------------------------------------------
+// 9. CLAIMS — PAC_CLIENT_CLAIMS_INFO and PAC_DEVICE_CLAIMS_INFO ([MS-PAC] 2.11,
+// [MS-ADTS] 2.2.18), added 2026-10-06 for iya-sts #493.
+//
+// The header's warning applies twice over, because a claims buffer is TWO NDR
+// streams, one inside the other. So the layout below is counted out BY HAND
+// from the IDL — the 16-bit enums, the union's repeated discriminant, the
+// NUL counted in a [string]'s three counts, the four bytes of padding in front
+// of an 8-aligned value — and only then round-tripped. A reader and writer
+// that both read CLAIM_TYPE as a ULONG would agree with each other and fail
+// every assertion on offsets here.
+// ---------------------------------------------------------------------------
+function claimsSetOf(arrays) {
+  return { arrays: arrays };
+}
+
+function theClaimsSetSitsWhereTheIdlSaysItDoes() {
+  log.debug("Entering theClaimsSetSitsWhereTheIdlSaysItDoes().");
+  // ONE array, ONE STRING claim "a" = ["x"]. Offsets from the start of the
+  // stream, header included:
+  //   16 top referent · 20 ulClaimsArrayCount · 24 ClaimsArrays ptr
+  //   28 usReservedType (u16) · 30 pad · 32 ulReservedFieldSize · 36 NULL
+  //   40 conformant count · 44 usClaimsSourceType (u16) · 46 pad
+  //   48 ulClaimsCount · 52 ClaimEntries ptr · 56 conformant count
+  //   60 Id ptr · 64 Type (u16) · 66 discriminant (u16) · 68 ValueCount
+  //   72 values ptr · 76 Id: max 2, offset 0, actual 2 · 88 'a' · 90 NUL
+  //   92 values conformant count · 96 one LPWSTR ptr
+  //   100 value: max 2, offset 0, actual 2 · 112 'x' · 114 NUL · pad to 120
+  var b = pac.encodeClaimsSet(claimsSetOf([{ sourceType: 1, claims: [
+    { id: "a", type: pac.CLAIM_TYPE.STRING, values: ["x"] }] }]));
+  assert.strictEqual(hex(b.subarray(0, 8)), "01100800cccccccc",
+    "the inner claims set is a type-serialized stream of its own");
+  assert.strictEqual(b.length, 120, "the stream pads to a multiple of 8");
+  assert.strictEqual(u32At(b, 8), 104,
+    "ObjectBufferLength counts everything after the 16-byte header");
+  assert.strictEqual(u32At(b, 20), 1, "ulClaimsArrayCount at 20");
+  assert.strictEqual(u16At(b, 28), 0, "usReservedType is a USHORT at 28");
+  assert.strictEqual(u32At(b, 32), 0, "ulReservedFieldSize at 32, after " +
+      "two bytes of padding");
+  assert.strictEqual(u32At(b, 36), 0, "a NULL ReservedField");
+  assert.strictEqual(u16At(b, 44), 1,
+    "usClaimsSourceType is a SIXTEEN-bit enum: AD (1) at 44");
+  assert.strictEqual(u32At(b, 48), 1, "ulClaimsCount at 48, not 46");
+  assert.strictEqual(u16At(b, 64), 3, "CLAIM_TYPE is sixteen bits: STRING");
+  assert.strictEqual(u16At(b, 66), 3,
+    "the union's discriminant is marshalled AGAIN, straight after Type, " +
+        "with no 8-byte alignment in NDR32");
+  assert.strictEqual(u32At(b, 68), 1, "ValueCount at 68");
+  assert.strictEqual(u32At(b, 76), 2,
+    "a [string] id's maximum count INCLUDES the terminating NUL");
+  assert.strictEqual(u32At(b, 84), 2, "and so does its actual count");
+  assert.strictEqual(u16At(b, 88), 0x61, "'a'");
+  assert.strictEqual(u16At(b, 90), 0, "then the NUL");
+  assert.strictEqual(u32At(b, 92), 1,
+    "the values array's count comes after the id, in field order");
+  assert.strictEqual(u16At(b, 112), 0x78, "'x' after its own three counts");
+
+  // The 64-bit case: ONE UINT64 claim "ab" = [5]. The id's characters are at
+  // 88 and 90 and its NUL at 92, so the values' conformant count is 4-aligned
+  // to 96 — and the value is 8-ALIGNED, so it is at 104, not 100: four bytes
+  // of padding a reader must skip.
+  var u = pac.encodeClaimsSet(claimsSetOf([{ claims: [
+    { id: "ab", type: pac.CLAIM_TYPE.UINT64, values: [5] }] }]));
+  assert.strictEqual(u16At(u, 64), 2, "UINT64");
+  assert.strictEqual(u32At(u, 76), 3, "\"ab\" and its NUL");
+  assert.strictEqual(u32At(u, 96), 1, "the values' count at 96");
+  assert.strictEqual(u32At(u, 100), 0, "four bytes of alignment padding");
+  assert.strictEqual(u32At(u, 104), 5,
+    "the value is 8-aligned: at 104, not 100");
+  assert.strictEqual(u32At(u, 108), 0, "its high half");
+  assert.strictEqual(u.length, 112);
+
+  // CLAIMS_SET_METADATA around it: the outer stream carries the inner bytes
+  // as a conformant byte array, uncompressed, and says so.
+  //   16 top · 20 ulClaimsSetSize · 24 ptr · 28 usCompressionFormat (u16)
+  //   32 ulUncompressedClaimsSetSize · 36 usReservedType (u16)
+  //   40 ulReservedFieldSize · 44 NULL · 48 conformant count · 52 the bytes
+  var m = pac.encodeClaimsSetMetadata(claimsSetOf([{ claims: [
+    { id: "ab", type: pac.CLAIM_TYPE.UINT64, values: [5] }] }]));
+  assert.strictEqual(u32At(m, 20), 112, "ulClaimsSetSize");
+  assert.strictEqual(u16At(m, 28), 0,
+    "COMPRESSION_FORMAT_NONE: this codec never compresses");
+  assert.strictEqual(u32At(m, 32), 112, "ulUncompressedClaimsSetSize");
+  assert.strictEqual(u32At(m, 48), 112, "the byte array's own count");
+  assert.strictEqual(hex(m.subarray(52, 60)), "01100800cccccccc",
+    "and the inner stream's header straight after it");
+  assert.strictEqual(m.length % 8, 0);
+  assert.deepStrictEqual(pac.parseClaimsInfo(m).claims[0].values, ["5"],
+    "and the READER skips the same four bytes of padding");
+  log.debug("Leaving theClaimsSetSitsWhereTheIdlSaysItDoes().");
+}
+
+function everyClaimTypeRoundTrips() {
+  log.debug("Entering everyClaimTypeRoundTrips().");
+  // TWO arrays and several claims each, for the header's reason (kind 3): the
+  // deferred parts of a multi-element array are where a reader that follows
+  // each pointer as it goes is right once and wrong after.
+  var spec = claimsSetOf([
+    { sourceType: pac.CLAIMS_SOURCE_TYPE.AD, claims: [
+      { id: "ad://ext/department:88d4d68c39060f49",
+        type: pac.CLAIM_TYPE.STRING, values: ["Engineering", "Ünïcødé"] },
+      { id: "ad://ext/level:1", type: pac.CLAIM_TYPE.INT64,
+        values: ["-9223372036854775808", -1, "9223372036854775807"] },
+      { id: "ad://ext/size:2", type: pac.CLAIM_TYPE.UINT64,
+        values: ["18446744073709551615", 0] },
+      { id: "ad://ext/flag:3", type: pac.CLAIM_TYPE.BOOLEAN,
+        values: [true, false] }
+    ] },
+    { sourceType: pac.CLAIMS_SOURCE_TYPE.CERTIFICATE, claims: [
+      { id: "cert-claim", type: pac.CLAIM_TYPE.STRING, values: ["one"] }
+    ] }
+  ]);
+  var parsed = pac.parseClaimsInfo(pac.encodeClaimsSetMetadata(spec));
+  assert.strictEqual(parsed.empty, false);
+  assert.strictEqual(parsed.compressionName, "COMPRESSION_FORMAT_NONE");
+  assert.strictEqual(parsed.claimsSet.arrays.length, 2);
+  assert.strictEqual(parsed.claimsSet.bytesUnread, 0,
+    "the reader consumed the stream exactly, padding and all");
+  assert.deepStrictEqual(parsed.claims.map(function (c) {
+    return [c.sourceType, c.id, c.typeName, c.values];
+  }), [
+    [1, "ad://ext/department:88d4d68c39060f49", "STRING",
+      ["Engineering", "Ünïcødé"]],
+    [1, "ad://ext/level:1", "INT64",
+      ["-9223372036854775808", "-1", "9223372036854775807"]],
+    [1, "ad://ext/size:2", "UINT64", ["18446744073709551615", "0"]],
+    [1, "ad://ext/flag:3", "BOOLEAN", [true, false]],
+    [2, "cert-claim", "STRING", ["one"]]
+  ], "every type at its extremes, exactly — the 64-bit values as decimal " +
+      "strings, which a JavaScript Number could not hold");
+
+  // An EMPTY buffer is "no claims", which a Windows KDC sends.
+  var empty = pac.parseClaimsInfo(new Uint8Array(0));
+  assert.strictEqual(empty.empty, true);
+  assert.deepStrictEqual(empty.claims, []);
+  log.debug("Leaving everyClaimTypeRoundTrips().");
+}
+
+function unencodableClaimValuesAreRefusedByName() {
+  log.debug("Entering unencodableClaimValuesAreRefusedByName().");
+  function refused(claim, pattern, why) {
+    assert.throws(function () {
+      pac.encodeClaimsSet(claimsSetOf([{ claims: [claim] }]));
+    }, pattern, why);
+  }
+  refused({ id: "i", type: pac.CLAIM_TYPE.INT64,
+            values: ["9223372036854775808"] }, /outside the range/,
+          "one past INT64's maximum");
+  refused({ id: "u", type: pac.CLAIM_TYPE.UINT64, values: [-1] },
+          /outside the range/, "a negative UINT64");
+  refused({ id: "n", type: pac.CLAIM_TYPE.INT64, values: ["1.5"] },
+          /not a INT64|not a decimal/, "a fraction");
+  refused({ id: "b", type: pac.CLAIM_TYPE.BOOLEAN, values: ["yes"] },
+          /not a BOOLEAN/, "a boolean that is not one");
+  refused({ id: "s", type: pac.CLAIM_TYPE.STRING, values: ["a\u0000b"] },
+          /NUL/, "a NUL inside a [string]");
+  refused({ id: "e", type: pac.CLAIM_TYPE.STRING, values: [] },
+          /no values/, "a claim with no value ([MS-ADTS] requires one)");
+  refused({ id: "t", type: 4, values: ["x"] }, /not one of INT64/,
+          "type 4, which the IDL does not define");
+  log.debug("Leaving unencodableClaimValuesAreRefusedByName().");
+}
+
+// A TEST-ONLY [MS-XCA] LZ77+Huffman ENCODER, as small as one can be: literals
+// and short matches only — a match length of 18 or more puts a length BYTE
+// into the input between bitstream words, which this does not attempt (the
+// Windows sample that exercises that path was checked where the codec was
+// written; iya-sts #493's report says so). Codes are assigned canonically
+// from `lengths` (512 four-bit lengths) by its OWN loop, so the decoder's table
+// builder is checked against a second implementation rather than itself.
+//
+// Two tables are used. FLAT gives every symbol 9 bits (512 × 2^-9 is exactly a
+// complete code). STEPPED gives the even bytes below 128 seven bits and every
+// match symbol nine, and nothing else a code — complete again (64 × 2^-7 +
+// 256 × 2^-9 = 1) but asymmetric within each table byte and with a jump of
+// TWO between lengths, which is what catches a decoder reading the nibbles
+// the wrong way round or shifting a canonical code by one.
+var FLAT = (function () {
+  var l = new Uint8Array(512);
+  l.fill(9);
+  return l;
+})();
+var STEPPED = (function () {
+  var l = new Uint8Array(512);
+  for (var s = 0; s < 128; s += 2) l[s] = 7;
+  for (var m = 256; m < 512; m++) l[m] = 9;
+  return l;
+})();
+
+function xpressHuffmanEncode(tokens, lengths) {
+  var table = lengths || FLAT;
+  var order = [];
+  for (var s = 0; s < 512; s++) {
+    if (table[s]) order.push(s);
+  }
+  order.sort(function (a, b) { return (table[a] - table[b]) || (a - b); });
+  var codes = {};
+  var code = 0;
+  var len = table[order[0]];
+  order.forEach(function (sym) {
+    while (len < table[sym]) {
+      code *= 2;
+      len++;
+    }
+    codes[sym] = code;
+    code++;
+  });
+  var bits = [];
+  function put(value, n) {
+    for (var i = n - 1; i >= 0; i--) bits.push(Math.floor(value / Math.pow(2, i)) % 2);
+  }
+  function symbol(sym) {
+    assert.ok(table[sym], "the test table gives symbol " + sym + " a code");
+    put(codes[sym], table[sym]);
+  }
+  tokens.forEach(function (t) {
+    if (typeof t === "number") {
+      symbol(t);
+      return;
+    }
+    var offsetBits = Math.floor(Math.log2(t.distance));
+    symbol(256 + (offsetBits << 4) + (t.length - 3));
+    put(t.distance - (1 << offsetBits), offsetBits);
+  });
+  symbol(256);                                       // the end-of-stream symbol
+  while (bits.length % 16) bits.push(0);
+  var out = [];
+  for (var b = 0; b < 256; b++) out.push(table[2 * b] | (table[2 * b + 1] << 4));
+  for (var w = 0; w < bits.length; w += 16) {
+    var word = 0;
+    for (var k = 0; k < 16; k++) word = (word << 1) | bits[w + k];
+    out.push(word & 0xff, word >> 8);
+  }
+  out.push(0, 0, 0, 0);
+  return new Uint8Array(out);
+}
+
+function compressedClaimsSetsAreReadAndNeverWritten() {
+  log.debug("Entering compressedClaimsSetsAreReadAndNeverWritten().");
+  // "abcabcabcX": three literals, a 6-byte match at distance 3 (overlapping
+  // its own output), one literal.
+  var stream = xpressHuffmanEncode([0x61, 0x62, 0x63,
+    { length: 6, distance: 3 }, 0x58]);
+  assert.strictEqual(Buffer.from(pac.decompressXpressHuffman(stream, 10))
+    .toString("latin1"), "abcabcabcX",
+    "a match may overlap the bytes it is copying, as LZ77 allows");
+  // "bdfbdfbdfZ" through the STEPPED table: even bytes only, seven-bit codes.
+  var stepped = xpressHuffmanEncode([0x62, 0x64, 0x66,
+    { length: 6, distance: 3 }, 0x5a], STEPPED);
+  assert.strictEqual(Buffer.from(pac.decompressXpressHuffman(stepped, 10))
+    .toString("latin1"), "bdfbdfbdfZ",
+    "the low nibble is the EVEN symbol, and canonical codes skip a length");
+
+  // A whole compressed claims set: the inner stream as literals and one long
+  // run, put into metadata that says COMPRESSION_FORMAT_XPRESS_HUFF.
+  var inner = pac.encodeClaimsSet(claimsSetOf([{ claims: [
+    { id: "ad://ext/note:9", type: pac.CLAIM_TYPE.STRING,
+      values: ["zzzzzzzzzzzzzzzz"] }] }]));
+  var tokens = [];
+  for (var i = 0; i < inner.length; i++) tokens.push(inner[i]);
+  var compressed = xpressHuffmanEncode(tokens);
+  var w = ndr.createWriter();
+  var lengthOffset = ndr.writeTypeMarshallingHeaders(w);
+  var start = w.offset;
+  w.pointer(true);
+  w.u32(compressed.length);
+  w.pointer(true);
+  w.u16(pac.CLAIMS_COMPRESSION.XPRESS_HUFF);
+  w.u32(inner.length);
+  w.u16(0); w.u32(0); w.pointer(false);
+  w.u32(compressed.length);
+  w.bytes(compressed);
+  w.align(8);
+  var metadata = w.patchU32(lengthOffset, w.offset - start).build();
+  var parsed = pac.parseClaimsInfo(metadata);
+  assert.strictEqual(parsed.compressionName,
+    "COMPRESSION_FORMAT_XPRESS_HUFF");
+  assert.deepStrictEqual(parsed.claims[0].values, ["zzzzzzzzzzzzzzzz"],
+    "a compressed set from another realm is decoded");
+
+  // The bounds.
+  assert.throws(function () {
+    pac.decompressXpressHuffman(xpressHuffmanEncode([{ length: 4,
+      distance: 2 }]), 4);
+  }, /reaches outside/, "a match before the start of the output");
+  assert.throws(function () {
+    pac.decompressXpressHuffman(stream, pac.CLAIMS_MAX_SIZE + 1);
+  }, /uncompressed size/, "a declared size over [MS-ADTS]'s 10 MiB range");
+  var holes = stream.slice();
+  holes[0] = 0x00;                               // symbols 0 and 1 vanish
+  assert.throws(function () {
+    pac.decompressXpressHuffman(holes, 10);
+  }, /not a complete code/, "a table with holes in its code space");
+  assert.throws(function () {
+    pac.decompressXpressHuffman(stream.subarray(0, 200), 10);
+  }, /ends at byte/, "a stream shorter than its own table");
+
+  // LZNT1 and plain XPRESS are named, not decoded.
+  var lznt = metadata.slice();
+  lznt[28] = pac.CLAIMS_COMPRESSION.LZNT1;
+  assert.throws(function () { pac.parseClaimsInfo(lznt); },
+    /COMPRESSION_FORMAT_LZNT1/);
+  log.debug("Leaving compressedClaimsSetsAreReadAndNeverWritten().");
+}
+
+async function claimsAreSignedCarriedAndReplacedInAPac() {
+  log.debug("Entering claimsAreSignedCarriedAndReplacedInAPac().");
+  var serverKey = keyOf(18, 0x11);
+  var kdcKey = keyOf(18, 0x77);
+  var claims = claimsSetOf([{ claims: [
+    { id: "ad://ext/department:1", type: pac.CLAIM_TYPE.STRING,
+      values: ["Sales"] }] }]);
+  var built = await buildSample({ clientClaims: claims });
+  var parsed = pac.parsePac(built.bytes);
+  var buffer = pac.bufferOfType(parsed, pac.TYPE.CLIENT_CLAIMS);
+  assert.ok(buffer && buffer.parsed, "buildPac() writes type 13 and " +
+      "parsePac() decodes it");
+  assert.deepStrictEqual(buffer.parsed.claims[0].values, ["Sales"]);
+  var order = parsed.buffers.map(function (b) { return b.type; });
+  assert.strictEqual(order.indexOf(pac.TYPE.CLIENT_CLAIMS),
+    order.indexOf(pac.TYPE.UPN_DNS_INFO) + 1,
+    "after the UPN and DNS information");
+  var results = await pac.verifySignatures(parsed,
+      { serverKey: serverKey, kdcKey: kdcKey });
+  results.forEach(function (r) {
+    assert.notStrictEqual(r.verified, false, r.name + " over a PAC with " +
+        "claims: " + r.note);
+  });
+
+  // Tampering with ONE claim byte breaks the server signature: the claims are
+  // covered like every other buffer.
+  var tampered = built.bytes.slice();
+  tampered[buffer.offset + buffer.size - 12] ^= 0x01;
+  var after = await pac.verifySignatures(pac.parsePac(tampered),
+      { serverKey: serverKey, kdcKey: kdcKey });
+  assert.strictEqual(after.filter(function (r) {
+    return r.type === pac.TYPE.SERVER_CHECKSUM;
+  })[0].verified, false, "a changed claim must break the server signature");
+
+  // A re-sign CARRIES the buffer byte for byte…
+  var resignKeys = { serverKey: keyOf(17, 0x21), kdcKey: keyOf(18, 0x55) };
+  var carried = pac.parsePac(await pac.resignPac(built.bytes, resignKeys));
+  assert.strictEqual(hex(pac.bufferOfType(carried,
+      pac.TYPE.CLIENT_CLAIMS).bytes), hex(buffer.bytes),
+    "a cross-realm re-sign carries the claims unchanged");
+  var resignedResults = await pac.verifySignatures(carried, resignKeys);
+  resignedResults.forEach(function (r) {
+    assert.notStrictEqual(r.verified, false, r.name + " after the re-sign");
+  });
+  // …REPLACES it when told to…
+  var replaced = pac.parsePac(await pac.resignPac(built.bytes,
+    Object.assign({ clientClaims: claimsSetOf([{ claims: [
+      { id: "ad://ext/department:1", type: pac.CLAIM_TYPE.STRING,
+        values: ["Support"] }] }]) }, resignKeys)));
+  assert.deepStrictEqual(pac.bufferOfType(replaced,
+      pac.TYPE.CLIENT_CLAIMS).parsed.claims[0].values, ["Support"]);
+  assert.strictEqual(pac.countOfType(replaced, pac.TYPE.CLIENT_CLAIMS), 1,
+    "replaced, not added beside");
+  // …and REMOVES it when told the client has none.
+  var removed = pac.parsePac(await pac.resignPac(built.bytes,
+    Object.assign({ clientClaims: null }, resignKeys)));
+  assert.strictEqual(pac.countOfType(removed, pac.TYPE.CLIENT_CLAIMS), 0);
+  log.debug("Leaving claimsAreSignedCarriedAndReplacedInAPac().");
+}
+
 async function test() {
   log.debug("Entering test().");
   await theHeaderMatchesTheSpecByteForByte();
@@ -1050,6 +1415,11 @@ async function test() {
   await theConsistencyRulesAreReported();
   theNdrReaderRefusesHostileInput();
   await everySignatureEtypeWorks();
+  theClaimsSetSitsWhereTheIdlSaysItDoes();
+  everyClaimTypeRoundTrips();
+  unencodableClaimValuesAreRefusedByName();
+  compressedClaimsSetsAreReadAndNeverWritten();
+  await claimsAreSignedCarriedAndReplacedInAPac();
   log.info("Test completed successfully.");
   log.debug("Leaving test().");
 }

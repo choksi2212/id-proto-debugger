@@ -26,6 +26,10 @@ const assert = require("assert");
 const path = require("path");
 const browserFlags = require("./browser_flags.js");
 const common = require("./jwt_vc_json_common.js");
+// The Verifier's website (iya-sts's companion on this suite's stacks), where
+// the chooser on step 0 sends the browser.
+const companionUrl = (process.env.COMPANION_URL || "http://localhost:9700")
+    .replace(/\/+$/, "");
 const { Command, Option } = require("commander");
 const { loadUrl } = require("./page_load.js");
 var appconfig = require(process.env.CONFIG_FILE);
@@ -104,30 +108,13 @@ function severeErrors(driver) {
   });
 }
 
-async function freshRequest() {
-  log.debug("Entering freshRequest().");
-  const r = await fetch(verifierBase + "/oid4vp/start?format=ldp_vc",
-      { redirect: "manual" });
-  const location = r.headers.get("location");
-  assert.ok(location,
-            "the verifier should redirect the wallet with its ldp_vc request.");
-  const params = {};
-  location.slice(location.indexOf("?") + 1).split("&").forEach(function (pair) {
-    const eq = pair.indexOf("=");
-    params[decodeURIComponent(pair.slice(0, eq))] =
-           decodeURIComponent(pair.slice(eq + 1));
-  });
-  log.debug("Leaving freshRequest().");
-  return { params: params, query: location.split("?")[1] };
-}
-
 // ---------------------------------------------------------------------------
 // Getting here the way a USER does, which is a different question from whether
 // the protocol works.
 //
-// freshRequest() below builds "/oid4vp/start?format=ldp_vc" by hand. That made
-// every other assertion in this file meaningful and, on its own, proved nothing
-// about reachability: for as long as this suite has passed, there was no route
+// A request built by hand ("/oid4vp/start?format=ldp_vc", as this file once
+// did) made every other assertion in this file meaningful and, on its own,
+// proved nothing about reachability: for as long as this suite has passed, there was no route
 // through the pages that produced that URL. Presentation step 0 linked to the
 // verifier with no format at all, so the verifier asked for its default
 // (dc+sd-jwt), the wallet answered with the ldp_vc it held, and the verifier
@@ -155,9 +142,11 @@ async function startsFromTheWalletsOwnPages(driver, held) {
   await driver.sleep(900);
 
   // Step 0 navigates from a click handler rather than an anchor, so the only
-  // honest way to read where a flow goes is to take it. Each of the three must
-  // name the format: a holder should not have to know that only one of the
-  // buttons happens to work with the credential they hold.
+  // honest way to read where a flow goes is to take it. All three go to the
+  // VERIFIER'S WEBSITE (iya-sts's companion here), and each has to say which
+  // format to ask for there: the format is the Verifier's choice, made on its
+  // own page, and a holder should not have to know that only one of its
+  // options works with the credential they hold.
   var flows = ["same-device", "same-device-signed", "cross-device"];
   for (var i = 0; i < flows.length; i++) {
     await loadUrl(driver, baseUrl + "/vc-presentation-0.html");
@@ -168,75 +157,39 @@ async function startsFromTheWalletsOwnPages(driver, held) {
       "return !!document.getElementById(arguments[0]);", buttonId);
     assert.ok(exists, "step 0 should offer the " + flows[i] + " flow (#" +
               buttonId + ").");
-    await driver.executeScript("document.getElementById(arguments[0]).click();",
-                               buttonId);
-    // Where a flow ENDS UP differs: the same-device one stops at the verifier's
-    // page, while the other two hit /oid4vp/start, which redirects straight on
-    // to the wallet with the finished request. So the URL carries format= for
-    // some and not others, and the question that actually matters is the same
-    // for all three — did the verifier ask for ldp_vc?
-    await driver.wait(async function () {
-      var u = await driver.getCurrentUrl();
-      return /oid4vp/.test(u) || /vc-presentation-1\.html/.test(u);
-    }, stepWait, "the " + flows[i] + " flow should leave step 0.");
+    // Clicked and read in ONE script: choose() writes the status line and
+    // then sets location.href, and the navigation it starts does not unload
+    // the page until this script has returned.
+    var said = await driver.executeScript(
+      "document.getElementById(arguments[0]).click();" +
+      "return document.getElementById('vp_usecase_status').textContent;",
+      buttonId);
+    assert.ok(/ldp_vc/.test(said),
+      "the " + flows[i] + " flow must tell the reader to ask for ldp_vc, the " +
+          "format this wallet holds, on the verifier's page — otherwise it " +
+          "asks for its default (dc+sd-jwt) and the wallet has nothing to " +
+          "answer with. Step 0 said: " + said);
+    await driver.wait(until.elementLocated(By.id("start")), stepWait,
+      "the " + flows[i] + " flow should land on the verifier's website.");
     var landed = await driver.getCurrentUrl();
-    var askedFor = "";
-    if (/[?&]format=([^&]+)/.test(landed)) {
-      askedFor = decodeURIComponent(/[?&]format=([^&]+)/.exec(landed)[1]);
-    } else if (/dcql_query=/.test(landed)) {
-      askedFor = JSON.parse(decodeURIComponent(/[?&]dcql_query=([^&]+)/.exec(
-          landed)[1]))
-        .credentials[0].format;
-    } else {
-      // Landed on the wallet with the request already read (or by reference):
-      // ask the page what arrived.
-      await driver.sleep(1200);
-      askedFor = await driver.executeScript(
-        "var r = JSON.parse(window.localStorage.getItem('sdjwtvp_request') " +
-            "|| '{}');" +
-        "var q = (r.params || {}).dcql_query;" +
-        "try { return q ? (JSON.parse(q).credentials[0].format || '') : ''; " +
-            "} catch (e) { return ''; }");
-    }
-    assert.strictEqual(askedFor, "ldp_vc",
-      "the " + flows[i] + " flow must make the verifier ask for ldp_vc, the " +
-          "format this wallet holds. " +
-      "Otherwise it asks for its default (dc+sd-jwt) and the wallet has " +
-          "nothing to answer with. " +
-      "Landed on: " + landed);
-    log.info("[route] OK — " + flows[i] + " → the verifier asks for " +
-             askedFor + ".");
+    assert.ok(landed.indexOf(companionUrl) === 0,
+      "the " + flows[i] + " flow should go to the verifier website step 0 " +
+          "is configured with (" + companionUrl + "), got " + landed);
+    log.info("[route] OK — " + flows[i] + " → the verifier's website, " +
+             "asking for ldp_vc.");
   }
 
-  // Take the same-device one all the way, and let the verifier's own page
-  // decide what to put in the request. Nothing below is constructed by this
-  // test.
+  // Take the same-device one all the way, through the verifier's own page:
+  // ldp_vc, by value, a wallet on this device. Nothing below is constructed
+  // by this test.
   await loadUrl(driver, baseUrl + "/vc-presentation-0.html");
   await pageBundleReady(driver);
   await driver.sleep(700);
   await driver.executeScript(
       "document.getElementById('vp_usecase_same-device').click();");
-  await driver.wait(async function () {
-    return /oid4vp\/verifier/.test(await driver.getCurrentUrl());
-  }, stepWait, "the same-device flow should land on the verifier's page.");
-  await driver.wait(until.elementLocated(By.id("present_by_value")), stepWait,
-    "the verifier's page should offer to start a presentation.");
-  var carried = await driver.executeScript(
-    "return document.getElementById('present_by_value').getAttribute('href');");
-  assert.ok(/format=ldp_vc/.test(carried),
-    "the verifier page must carry the format into its own links, or clicking " +
-        "through drops it and the " +
-    "request reverts to dc+sd-jwt. Got: " + carried);
-  assert.ok(await driver.executeScript(
-    "return !!document.getElementById('present_ldp_vc');"),
-    "and it should offer an ldp_vc option at all — for a long time it " +
-        "offered dc+sd-jwt and " +
-    "jwt_vc_json only, so a holder arriving directly had no way to ask for " +
-        "this format.");
-
-  await driver.findElement(By.id("present_by_value")).click();
-  await driver.wait(until.urlContains("vc-presentation-1.html"), stepWait,
-    "the verifier should hand the request back to the wallet.");
+  await common.startAtTheVerifierWebsite(driver, { By: By, until: until,
+    format: "ldp_vc", byReference: false, crossDevice: false,
+    wait: stepWait });
   await waitForStatus(driver, "vp_request_status",
                       function (s) { return /Request read/.test(s); },
     "step 1 should read the request it was handed", stepWait);
@@ -290,8 +243,6 @@ async function refusesAFormatItCannotAnswer(driver) {
   assert.strictEqual(typeof sdJwt.credential, "string",
     "the control credential should be a compact-serialized one, i.e. " +
         "NOT ldp_vc.");
-  const request = await freshRequest();
-
   await loadUrl(driver, baseUrl + "/vc-presentation-1.html");
   await pageBundleReady(driver);
   await driver.executeScript(
@@ -299,7 +250,10 @@ async function refusesAFormatItCannotAnswer(driver) {
     "localStorage.setItem('sdjwtvc_credential', arguments[0]);" +
     "localStorage.setItem('sdjwtvp_verifier_base_url', arguments[1]);",
     sdJwt.credential, verifierBase);
-  await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" + request.query);
+  // The ldp_vc request the way a person gets one: the Verifier's website.
+  await common.requestThroughTheVerifierWebsite(driver, { By: By,
+    until: until, siteUrl: companionUrl + "/verifier", format: "ldp_vc",
+    wait: stepWait });
   await driver.sleep(1200);
 
   var state = await driver.executeScript(
@@ -334,14 +288,6 @@ async function test() {
   assert.strictEqual(typeof held.credential, "object",
                      "an ldp_vc credential is a JSON object.");
 
-  const request = await freshRequest();
-  const dcql = JSON.parse(request.params.dcql_query);
-  assert.strictEqual(dcql.credentials[0].format, "ldp_vc",
-    "the verifier should be asking for ldp_vc.");
-  assert.deepStrictEqual(dcql.credentials[0].claims[0].path.slice(0, 1),
-                         ["credentialSubject"],
-    "and address its claims under credentialSubject, where a W3C VC " +
-        "keeps them.");
 
   var options = new chrome.Options();
   if (headless) options.addArguments("--headless=new");
@@ -360,7 +306,18 @@ async function test() {
       "localStorage.setItem('sdjwtvc_credential', arguments[0]);" +
       "localStorage.setItem('sdjwtvp_verifier_base_url', arguments[1]);",
       JSON.stringify(held.credential), verifierBase);
-    await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" + request.query);
+    // The request the way a person gets one: the Verifier's website, which
+    // redirects the browser to step 1 with it.
+    const request = await common.requestThroughTheVerifierWebsite(driver, {
+      By: By, until: until, siteUrl: companionUrl + "/verifier",
+      format: "ldp_vc", wait: stepWait });
+    const dcql = JSON.parse(request.params.dcql_query);
+    assert.strictEqual(dcql.credentials[0].format, "ldp_vc",
+      "the verifier should be asking for ldp_vc.");
+    assert.deepStrictEqual(dcql.credentials[0].claims[0].path.slice(0, 1),
+                           ["credentialSubject"],
+      "and address its claims under credentialSubject, where a W3C VC " +
+          "keeps them.");
     await waitForStatus(driver, "vp_request_status",
                         function (s) { return /Request read/.test(s); },
       "step 1 should read an ldp_vc request", stepWait);
@@ -412,18 +369,18 @@ async function test() {
         "b.click();");
     await driver.wait(until.urlContains("vc-presentation-3.html"), stepWait,
       "presenting should reach step 3.");
-    const verdict = await waitForStatus(driver, "vp_verifier_status",
-      function (s) { return /ACCEPTED|REFUSED/.test(s); },
-                "the verifier should reach a verdict", stepWait);
-    assert.ok(/ACCEPTED/.test(verdict),
-      "the verifier must accept a correctly derived bbs-2023 proof. Said: " +
-          verdict);
+    const verdict = await common.verdictOfWhatWasSent(driver, { By: By,
+      until: until, wait: stepWait, verifierBase: verifierBase });
+    assert.ok(verdict.ok,
+      "the verifier must accept a correctly derived bbs-2023 proof. Its " +
+          "verdict: " + JSON.stringify(verdict));
     const recheck = await waitForStatus(driver, "vp_recheck_status",
       function (s) { return s.trim() !== ""; },
                 "the wallet should re-check what it sent", stepWait);
     assert.ok(/all pass/.test(recheck),
               "the wallet's own checks should pass. Said: " + recheck);
-    log.info("[step3] OK — " + verdict.trim().slice(0, 90));
+    log.info("[step3] OK — the Verifier accepted it, " +
+             (verdict.checks || []).length + " check(s).");
 
     const errors = await severeErrors(driver);
     assert.strictEqual(errors.length, 0, "the pages logged browser errors:\n" +
@@ -432,8 +389,9 @@ async function test() {
     log.info("=== Unlinkability, and what the verifier refuses ===");
     // A second presentation of the SAME credential must produce different
     // bytes.
-    const second = await freshRequest();
-    await loadUrl(driver, baseUrl + "/vc-presentation-1.html?" + second.query);
+    const second = await common.requestThroughTheVerifierWebsite(driver, {
+      By: By, until: until, siteUrl: companionUrl + "/verifier",
+      format: "ldp_vc", wait: stepWait });
     await waitForStatus(driver, "vp_request_status",
                         function (s) { return /Request read/.test(s); },
       "step 1 should read the second request", stepWait);
@@ -465,8 +423,8 @@ async function test() {
         state: second.params.state
       }).toString()
     });
-    const result = await common.httpJson(verifierBase + "/oid4vp/result/" +
-      encodeURIComponent(second.params.state));
+    const result = await common.verificationResult(verifierBase,
+      second.params.state);
     const v = (result.body || {}).verdict || {};
     assert.strictEqual(v.ok, false,
       "a proof derived for one request must be refused by another — the " +
