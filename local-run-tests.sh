@@ -711,10 +711,11 @@ prepTestEnv()
 startDocker()
 {
   # Clear the CONTAINERIZED stack's containers first. The two compose files give
-  # several services the same hard-coded `container_name` — keycloak-wsfed, sts,
-  # keycloak — while configuring them incompatibly (this file uses host networking
-  # and a WildFly port-offset; docker-compose-run-tests.yml uses a bridge network
-  # and published ports). A container left behind by ./docker-run-tests.sh is
+  # several services the same hard-coded `container_name` — keycloak-wsfed,
+  # id-proto-debugger-sts, keycloak — while configuring them incompatibly
+  # (this file uses host networking and a WildFly port-offset;
+  # docker-compose-run-tests.yml uses a bridge network and published ports).
+  # A container left behind by ./docker-run-tests.sh is
   # therefore the wrong container for this run, and compose cannot create the right
   # one while that name is taken: `up` fails, or the side-car simply never appears
   # and the WS-Federation check below stops the run. docker-run-tests.sh does the

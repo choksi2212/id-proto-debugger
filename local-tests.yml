@@ -230,7 +230,11 @@ services:
      keycloak:
         condition: service_healthy
   sts:
-    container_name: sts
+    # NOT `sts`: the iya-sts repository's own docker-compose.yml names its
+    # container `sts` too, a container name is machine-wide, and whichever
+    # stack started second could not create its mock. The SERVICE (and so
+    # the DNS name every URL here uses) is still `sts`.
+    container_name: id-proto-debugger-sts
     hostname: sts
     # THE TAG IS MACHINE-WIDE AND THIS IS NOT THE ONLY REPOSITORY THAT BUILDS
     # IT (2026-09-15). `sts/` is the iya-sts submodule and that repository
