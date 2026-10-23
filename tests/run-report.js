@@ -962,11 +962,14 @@ function buildJobs() {
   // run is happening; the SVGs land in this run's own report directory. See
   // docs/test-suite-map.md.
   //
-  // The mock only. It needs three clients nobody registered, a user with no
-  // password and a token endpoint that will exchange anything for anything —
-  // Keycloak would need all of that provisioned first, and the compliant realm
-  // has opinions about a public client and about a scope that grows, which is a
-  // different test.
+  // The mock only, in EITHER of its modes, and the job asks it which
+  // (`GET /admin-api/mode`). In development it needs nothing beyond the four
+  // entries; in product it also provisions what that mode refuses without —
+  // bob_end_user's password, a secret per confidential tier, the registered
+  // callback, the declared scopes and grants, the CORS origin, and the
+  // delegation policy's impersonation rules — through the same /admin-api
+  // token every job here is given. Keycloak would need all of that and a
+  // token-exchange permission per pair, which is a different test.
   if (env.WSTRUST_STS_URL) {
     jobs.push({
       name: "OAuth2 delegation chain (OIDC sign-in, then two RFC 8693 hops " +
