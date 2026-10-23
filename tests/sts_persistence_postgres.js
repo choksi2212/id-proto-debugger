@@ -1317,8 +1317,14 @@ async function twoProcessesAndTheChangeLog(first, root, databaseUrl) {
   // through /admin-api/config/set.
   // ---------------------------------------------------------------------
   log.info("=== Two processes, one database, coordination OFF ===");
+  // And it holds the WHOLE directory: on a postgres store iya-sts's default
+  // (ldap.workerDirectory=auto, #320) is a window that reads a person it
+  // does not hold straight from the store, so a lookup by name finds a write
+  // another process made with coordination off or on. "Its own copy" is the
+  // memory directory, and that is what this half is about.
   const alone = await startMock(root, databaseUrl, "the lone instance",
-      { STS_PERSISTENCE_COORDINATE: "false" });
+      { STS_PERSISTENCE_COORDINATE: "false",
+        LDAP_WORKER_DIRECTORY: "memory" });
   try {
     const seen = await status(alone);
     assert.strictEqual(seen.coordinates, false,
