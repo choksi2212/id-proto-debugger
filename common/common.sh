@@ -3249,10 +3249,10 @@ configureKeycloakWsfed()
 # ---------------------------------------------------------------------------
 # A MOCK STS TREE THE HOST CAN RUN, TAKEN OUT OF THE IMAGE THAT WAS JUST BUILT.
 #
-# `tests/sts_persistence_postgres.js` is the one job here that starts the mock
-# ITSELF — `node server.js`, against a postgres it runs in a container — so it
-# needs a complete tree: sources, node_modules, and since iya-sts #50 the
-# COMPILED TypeScript. A checkout has none of the third. `server.js` refuses to
+# A host-run job that loads the mock's own modules needs a complete tree:
+# sources, node_modules, and since iya-sts #50 the COMPILED TypeScript. (The
+# job this was written for, `sts_persistence_postgres.js`, started the mock
+# itself; it moved to iya-sts on 2026-10-23 as that repository's own test.) A checkout has none of the third. `server.js` refuses to
 # start from one with STS-CORE-0093, naming 188 sources with no `.js` beside
 # them, and that job self-skipped for want of a build.
 #
